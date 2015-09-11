@@ -4,55 +4,74 @@
    BT , Texas A&M University, 2013-14 
 */
 
-#include <base/numbers.h>
-#include <base/quadrature_lib.h> 
-#include <base/function.h>
-#include <base/function_parser.h>
-#include <base/utilities.h>
-#include <base/timer.h>
+#include <deal.II/base/quadrature_lib.h> 
+#include <deal.II/base/function.h>
+#include <deal.II/base/function_parser.h>
+#include <deal.II/base/numbers.h>
+#include <deal.II/base/utilities.h>
+#include <deal.II/base/timer.h>
 
-#include <lac/parallel_vector.h>
-#include <lac/sparse_matrix.h>
-#include <lac/sparse_matrix.templates.h>
-#include <lac/compressed_simple_sparsity_pattern.h>
-#include <lac/constraint_matrix.h>
-
-#include <grid/tria.h>
-#include <grid/grid_out.h>
-#include <distributed/grid_refinement.h>
-
-#include <grid/grid_generator.h>
-#include <grid/tria_accessor.h>
-#include <grid/tria_iterator.h>
-#include <grid/tria_boundary_lib.h>
-
-#include <distributed/tria.h>
-#include <base/index_set.h>
-#include <base/conditional_ostream.h>
-
-#include <dofs/dof_handler.h>
-#include <dofs/dof_renumbering.h>
-#include <dofs/dof_accessor.h>
-#include <dofs/dof_tools.h>
-
-#include <fe/fe_values.h>
-#include <fe/fe_q.h>
-#include <fe/fe_system.h>
-
-#include <numerics/vector_tools.h>
-#include <numerics/matrix_tools.h>
-#include <numerics/data_out.h>
-#include <numerics/error_estimator.h>
-
-#include <lac/trilinos_sparse_matrix.h>
-#include <lac/trilinos_vector.h>
-#include <lac/trilinos_precondition.h>
-#include <lac/trilinos_solver.h>
+#include <deal.II/lac/generic_linear_algebra.h>
+#define USE_PETSC_LA
+namespace LA
+{
+#ifdef USE_PETSC_LA
+  using namespace dealii::LinearAlgebraPETSc;
+#else
+  using namespace dealii::LinearAlgebraTrilinos;
+#endif
+}
 
 #include <deal.II/lac/solver_cg.h>
 #include <deal.II/lac/solver_gmres.h>
 #include <deal.II/lac/precondition.h>
 #include <deal.II/lac/sparsity_tools.h>
+#include <deal.II/lac/parallel_vector.h>
+#include <deal.II/lac/sparse_matrix.h>
+#include <deal.II/lac/sparse_matrix.templates.h>
+#include <deal.II/lac/compressed_simple_sparsity_pattern.h>
+#include <deal.II/lac/constraint_matrix.h>
+
+// #include <deal.II/grid/tria.h>
+#include <deal.II/grid/grid_out.h>
+
+#include <deal.II/distributed/grid_refinement.h>
+#include <deal.II/distributed/tria.h>
+
+#include <deal.II/base/index_set.h>
+#include <deal.II/base/conditional_ostream.h>
+
+#include <deal.II/grid/grid_generator.h>
+#include <deal.II/grid/tria_accessor.h>
+#include <deal.II/grid/tria_iterator.h>
+#include <deal.II/grid/tria_boundary_lib.h>
+
+#include <deal.II/dofs/dof_handler.h>
+#include <deal.II/dofs/dof_renumbering.h>
+#include <deal.II/dofs/dof_accessor.h>
+#include <deal.II/dofs/dof_tools.h>
+
+#include <deal.II/fe/fe_values.h>
+#include <deal.II/fe/fe_q.h>
+#include <deal.II/fe/fe_system.h>
+
+#include <deal.II/numerics/vector_tools.h>
+#include <deal.II/numerics/matrix_tools.h>
+#include <deal.II/numerics/data_out.h>
+#include <deal.II/numerics/error_estimator.h>
+
+#ifdef USE_PETSC_LA
+#include <deal.II/lac/petsc_parallel_sparse_matrix.h>
+#include <deal.II/lac/petsc_parallel_vector.h>
+#include <deal.II/lac/petsc_solver.h>
+#include <deal.II/lac/petsc_precondition.h>
+#else
+#include <deal.II/lac/trilinos_sparse_matrix.h>
+#include <deal.II/lac/trilinos_vector.h>
+#include <deal.II/lac/trilinos_precondition.h>
+#include <deal.II/lac/trilinos_solver.h>
+#endif
+
 
 /** std */
 #include <fstream>
@@ -134,8 +153,8 @@ private:
                              const double         dt   ,
                              const bool           is_explicit);
   
-  std::pair<unsigned int, double> linear_solve (TrilinosWrappers::MPI::Vector   &solution); 
-  std::pair<unsigned int, double> mass_solve   (TrilinosWrappers::MPI::Vector   &solution); 
+  std::pair<unsigned int, double> linear_solve (LA::MPI::Vector   &solution); 
+  std::pair<unsigned int, double> mass_solve   (LA::MPI::Vector   &solution); 
   
   void refine_grid ();
   
@@ -173,21 +192,21 @@ private:
   IndexSet                                   locally_owned_dofs;
   IndexSet                                   locally_relevant_dofs;
 
-  TrilinosWrappers::MPI::Vector                 current_solution;
-  TrilinosWrappers::MPI::Vector                 old_solution;
-  TrilinosWrappers::MPI::Vector                 older_solution;
-  TrilinosWrappers::MPI::Vector                 oldest_solution;
-  TrilinosWrappers::MPI::Vector                 old_entropy;
+  LA::MPI::Vector                 current_solution;
+  LA::MPI::Vector                 old_solution;
+  LA::MPI::Vector                 older_solution;
+  LA::MPI::Vector                 oldest_solution;
+  LA::MPI::Vector                 old_entropy;
 
   //  step-40 has ::MPI for matrices ...
-  TrilinosWrappers::SparseMatrix system_matrix;
-  TrilinosWrappers::SparseMatrix mass_matrix;
-  TrilinosWrappers::MPI::Vector  system_rhs; 
+  LA::MPI::SparseMatrix system_matrix;
+  LA::MPI::SparseMatrix mass_matrix;
+  LA::MPI::Vector  system_rhs; 
 
-  TrilinosWrappers::MPI::Vector              tmp_vect_relev;
-  TrilinosWrappers::MPI::Vector              tmp_vect_owned;
-  std::vector<TrilinosWrappers::MPI::Vector> Y;
-  std::vector<TrilinosWrappers::MPI::Vector> previous_f;
+  LA::MPI::Vector              tmp_vect_relev;
+  LA::MPI::Vector              tmp_vect_owned;
+  std::vector<LA::MPI::Vector> Y;
+  std::vector<LA::MPI::Vector> previous_f;
 
   double      h_min;
   double      h_min_;
@@ -327,12 +346,12 @@ void BurgersProblem<dim>::setup_system ()
     system_rhs.reinit       (locally_owned_dofs,mpi_communicator);
     
     // Y is a solution. It needs to have ghost entries
-    Y = std::vector<TrilinosWrappers::MPI::Vector> (n_stages, TrilinosWrappers::MPI::Vector ());
+    Y = std::vector<LA::MPI::Vector> (n_stages, LA::MPI::Vector ());
     for (unsigned short stage = 0; stage < n_stages; ++stage) 
       Y[stage].reinit (locally_owned_dofs,locally_relevant_dofs,mpi_communicator);
       
     // previous_f contributes tot he system rhs. It only needs to be of size locally_owned
-    previous_f = std::vector<TrilinosWrappers::MPI::Vector> (n_stages, TrilinosWrappers::MPI::Vector ());
+    previous_f = std::vector<LA::MPI::Vector> (n_stages, LA::MPI::Vector ());
     for (unsigned short stage = 0; stage < n_stages; ++stage) 
       previous_f[stage].reinit (locally_owned_dofs,mpi_communicator);
       
@@ -1177,8 +1196,8 @@ void BurgersProblem<dim>::compute_tr_residual (const unsigned short stage_i   ,
                                                const double         dt        )
 {        
   
-  TrilinosWrappers::MPI::Vector u     (locally_owned_dofs,mpi_communicator);
-  TrilinosWrappers::MPI::Vector u_old (locally_owned_dofs,mpi_communicator);
+  LA::MPI::Vector u     (locally_owned_dofs,mpi_communicator);
+  LA::MPI::Vector u_old (locally_owned_dofs,mpi_communicator);
   
   int i=0;
 
@@ -1434,7 +1453,7 @@ void BurgersProblem<dim>::assemble_ss_jacobian_cell_term (const FEValues<dim>   
 
 
 template <int dim>
-std::pair<unsigned int, double> BurgersProblem<dim>::linear_solve (TrilinosWrappers::MPI::Vector &newton_update)
+std::pair<unsigned int, double> BurgersProblem<dim>::linear_solve (LA::MPI::Vector &newton_update)
 { 
   switch (parameters->solver)
   {
@@ -1444,10 +1463,10 @@ std::pair<unsigned int, double> BurgersProblem<dim>::linear_solve (TrilinosWrapp
       const double linear_tol = parameters->linear_rtol*system_rhs.l2_norm() + parameters->linear_atol ;
 
       SolverControl  solver_control (system_rhs.size(), linear_tol );
-      TrilinosWrappers::SolverCG  solver (solver_control);
-      TrilinosWrappers::MPI::Vector completely_dist_solution(locally_owned_dofs,mpi_communicator);
+      LA::SolverCG  solver (solver_control);
+      LA::MPI::Vector completely_dist_solution(locally_owned_dofs,mpi_communicator);
       
-      TrilinosWrappers::PreconditionSSOR preconditioner;
+      LA::MPI::PreconditionSSOR preconditioner;
       preconditioner.initialize(system_matrix);
 
       // solver only accepts locally owned dofs, thus use completely_dist_solution as container for the solve result
@@ -1477,7 +1496,7 @@ std::pair<unsigned int, double> BurgersProblem<dim>::linear_solve (TrilinosWrapp
 
 
 template <int dim>
-std::pair<unsigned int, double> BurgersProblem<dim>::mass_solve (TrilinosWrappers::MPI::Vector &solu)
+std::pair<unsigned int, double> BurgersProblem<dim>::mass_solve (LA::MPI::Vector &solu)
 { 
   switch (parameters->solver)
   {
@@ -1487,12 +1506,12 @@ std::pair<unsigned int, double> BurgersProblem<dim>::mass_solve (TrilinosWrapper
       const double linear_tol = parameters->linear_rtol*system_rhs.l2_norm() + parameters->linear_atol ;
 
       SolverControl  solver_control (system_rhs.size(), linear_tol );
-      TrilinosWrappers::SolverCG solver (solver_control);
-      TrilinosWrappers::MPI::Vector completely_dist_solution(locally_owned_dofs,mpi_communicator);
+      LA::SolverCG solver (solver_control);
+      LA::MPI::Vector completely_dist_solution(locally_owned_dofs,mpi_communicator);
  
       //PreconditionSSOR<> preconditioner;
       // const double omega = parameters->ssor_omega;
-      TrilinosWrappers::PreconditionSSOR preconditioner;
+      LA::MPI::PreconditionSSOR preconditioner;
       preconditioner.initialize(mass_matrix);
   
       // solver only accepts locally owned dofs, thus use completely_dist_solution as container for the solve result
@@ -1685,7 +1704,7 @@ void BurgersProblem<dim>::output_exact_solution (const unsigned int time_step_no
 
 //  ExactSolution<dim>::debugprint=true;
   
-  TrilinosWrappers::MPI::Vector exact_solution(locally_owned_dofs,mpi_communicator);
+  LA::MPI::Vector exact_solution(locally_owned_dofs,mpi_communicator);
   VectorTools::interpolate (dof_handler,
                             ExactSolution<dim>( MyComponents::n_components,
                                                 parameters->length,
@@ -1825,7 +1844,7 @@ void BurgersProblem<dim>::run ()
         << std::endl;
 
   // auxiliary vector in Newton solve
-  TrilinosWrappers::MPI::Vector newton_update (locally_owned_dofs,locally_relevant_dofs,mpi_communicator);
+  LA::MPI::Vector newton_update (locally_owned_dofs,locally_relevant_dofs,mpi_communicator);
 
   // jcr &
   const double       &time_step    = parameters->time_step;
@@ -1844,7 +1863,7 @@ void BurgersProblem<dim>::run ()
   //      VectorTools::interpolate (dof_handler,
   //                                parameters.initial_conditions, solution);
 
-  TrilinosWrappers::MPI::Vector completely_dist_solution(locally_owned_dofs,mpi_communicator);
+  LA::MPI::Vector completely_dist_solution(locally_owned_dofs,mpi_communicator);
   VectorTools::interpolate(dof_handler,
                            InitialData<dim>(n_components,parameters->pbID), 
                            //ZeroFunction<dim>(n_components), 
@@ -1983,8 +2002,8 @@ void BurgersProblem<dim>::run ()
         //current_solution.add(parameters->damping, newton_update);
         
         // create a tmp vector with only locally_owned dofs
-        TrilinosWrappers::MPI::Vector tmp(locally_owned_dofs,mpi_communicator);
-        TrilinosWrappers::MPI::Vector tm2(locally_owned_dofs,mpi_communicator);
+        LA::MPI::Vector tmp(locally_owned_dofs,mpi_communicator);
+        LA::MPI::Vector tm2(locally_owned_dofs,mpi_communicator);
         // copy the locally owned dofs in it
         /*        std::cout << " size " << current_solution.size() 
                   << " size " << tmp.size() 
@@ -2031,7 +2050,7 @@ void BurgersProblem<dim>::run ()
     //    std::cout << "system_rhs = 0.0 " << std::endl;
     system_rhs = 0.0;
     //    std::cout << "mass_matrix.vmult " << std::endl;
-    TrilinosWrappers::MPI::Vector tmp(locally_owned_dofs,mpi_communicator);
+    LA::MPI::Vector tmp(locally_owned_dofs,mpi_communicator);
     tmp = old_solution;       
     mass_matrix.vmult(system_rhs,tmp);    
     //    std::cout << "after mass.vmult" << std::endl;
@@ -2082,7 +2101,8 @@ int main (int argc, char* argv[])
 
   try
   {
-    Utilities::System::MPI_InitFinalize mpi_initialization (argc, argv);
+    // Utilities::System::MPI_InitFinalize mpi_initialization (argc, argv);
+    Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1);
 
     const unsigned int dim = 2;
 

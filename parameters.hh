@@ -1,8 +1,8 @@
 #ifndef PARAMETERS_HH
 #define PARAMETERS_HH
 
-#include <base/parameter_handler.h>
-#include <base/conditional_ostream.h>
+#include <deal.II/base/parameter_handler.h>
+#include <deal.II/base/conditional_ostream.h>
 
 #include "my_components.hh"
 
