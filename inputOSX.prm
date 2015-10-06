@@ -1,0 +1,89 @@
+# Listing of Parameters
+# ---------------------
+#
+# --------------------------------------------------
+# Time stepping control
+subsection time stepping
+  set time step 	 =  0.0001 # simulation time step
+  set initial time	 =  0.0  # simulation start time
+  set final time	 =  0.0001 # 0.250  # simulation end time
+  set theta scheme value =  0.5
+  set time discretization scheme  =  9
+  set perform steady state first = true #
+end
+
+# --------------------------------------------------
+# Solver
+subsection nonlinear solver
+  set output			   = verbose
+  set nonlinear method		   = newton
+  set nonlinear absolute tolerance = 1e-10
+  set nonlinear relative tolerance = 1e-12
+  set max nonlinear iters	   = 10
+end
+
+subsection linear solver
+  set output		      = quiet
+  set linear method	      = direct
+  set ilut fill 	      = 1.5
+  set ilut drop tolerance     = 1e-6
+  set ilut absolute tolerance = 1e-8
+  set ilut relative tolerance = 1.0
+  set linear absolute tolerance = 1e-12
+  set linear relative tolerance = 1e-12
+end
+
+# --------------------------------------------------
+# Refinement
+subsection refinement
+  set number initial mesh refinements = 4
+end
+
+# --------------------------------------------------
+# Domain
+subsection domain
+  set length = 1.
+end
+
+# --------------------------------------------------
+# Entropy
+subsection entropy
+  set c_max = 0.5
+  set c_ent = 1.0
+  set c_jmp = 4.0
+  set cfl   = 0.5
+  set viscosity option	= 1
+  set constant viscosity = 0.02
+  set is cfl time adaptive =  false #
+end
+
+# --------------------------------------------------
+# Exact solution
+subsection exact solution
+  set has exact solution = false #
+  set amplitude = 10.0
+  set spatial shape option = 0
+  set temporal function option = 0
+  set time constant a0 = 1.0
+  set problem ID       = 1
+end
+
+# --------------------------------------------------
+# FE Space
+subsection fe space
+  set polynomials of degree p	    = 1
+  set number quadrature points	    = 3
+  set number face quadrature points = 2
+end
+
+# --------------------------------------------------
+# Boundary conditions
+#
+subsection boundary_0
+  set Dirichlet = true #
+  set value	= 0.0
+end
+subsection boundary_1
+  set Dirichlet = true #
+  set value	= 0.0
+end
