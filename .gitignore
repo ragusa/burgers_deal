@@ -32,3 +32,10 @@
 CMakeFiles/*
 CMakeCache.txt
 Makefile
+
+# output files
+*.vtu
+*.pvtu
+*.vtk
+*.pvtk
+*.txt
