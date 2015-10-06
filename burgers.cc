@@ -29,7 +29,7 @@ namespace LA
 #include <deal.II/lac/parallel_vector.h>
 #include <deal.II/lac/sparse_matrix.h>
 #include <deal.II/lac/sparse_matrix.templates.h>
-#include <deal.II/lac/compressed_simple_sparsity_pattern.h>
+#include <deal.II/lac/dynamic_sparsity_pattern.h>
 #include <deal.II/lac/constraint_matrix.h>
 
 // #include <deal.II/grid/tria.h>
@@ -134,14 +134,14 @@ private:
   void assemble_ss_jacobian (const bool is_steady_state,
                              const double time);
   
-/*  void compute_ss_residual_cell_term (const FEValues<dim>             &fe_values,
-                                      const std::vector<unsigned int> &dofs,
-                                      const double                     time,
-                                      const bool                       is_steady_state,
-                                      const typename DoFHandler<dim>::active_cell_iterator cell);
+/*  void compute_ss_residual_cell_term (const FEValues<dim>             &fe_values      ,
+                                        const std::vector<unsigned int> &dofs           ,
+                                        const double                     time           ,
+                                        const bool                       is_steady_state,
+                                        const typename DoFHandler<dim>::active_cell_iterator cell);
   
   void assemble_ss_jacobian_cell_term (const FEValues<dim>             &fe_values,
-                                       const std::vector<unsigned int> &dofs,
+                                       const std::vector<unsigned int> &dofs     ,
                                        const double                     time     );
 */  
   void compute_tr_residual (const unsigned short stage,
@@ -403,19 +403,19 @@ void BurgersProblem<dim>::setup_system ()
   In case the constraints are already taken care of in this function, it is possible to neglect off-diagonal entries in the sparsity pattern. When using ConstraintMatrix::distribute_local_to_global during assembling, no entries will ever be written into these matrix position, so that one can save some computing time in matrix-vector products by not even creating these elements. In that case, the variable keep_constrained_dofs needs to be set to false.
   */
 
-  CompressedSimpleSparsityPattern compressed_sparsity_pattern (locally_relevant_dofs);
+  DynamicSparsityPattern dyn_sparsity_pattern (locally_relevant_dofs);
   DoFTools::make_sparsity_pattern (dof_handler, 
-                                   compressed_sparsity_pattern, 
+                                   dyn_sparsity_pattern, 
                                    constraints, false); 
-  SparsityTools::distribute_sparsity_pattern (compressed_sparsity_pattern,
+  SparsityTools::distribute_sparsity_pattern (dyn_sparsity_pattern,
                                               dof_handler.n_locally_owned_dofs_per_processor(),
                                               mpi_communicator,
                                               locally_relevant_dofs);
   
   // system matrix 
-  system_matrix.reinit (locally_owned_dofs,locally_owned_dofs,compressed_sparsity_pattern,mpi_communicator);
+  system_matrix.reinit (locally_owned_dofs,locally_owned_dofs,dyn_sparsity_pattern,mpi_communicator);
   // mass matrix 
-  mass_matrix.reinit (locally_owned_dofs,locally_owned_dofs,compressed_sparsity_pattern,mpi_communicator);
+  mass_matrix.reinit (locally_owned_dofs,locally_owned_dofs,dyn_sparsity_pattern,mpi_communicator);
 
   c_max = parameters->c_max;
   c_ent = parameters->c_ent;
@@ -546,8 +546,10 @@ void BurgersProblem<dim>::compute_entropy_viscosity()
 {
 //  std::string str = "visc_ent_" + Utilities::int_to_string(time_step_no,4) + ".txt"; std::ofstream o (str.c_str()); 
 //  entropy_viscosity_K.print(o, 10,true,false);
+
+  Vector<double> ones(n_q_pts);
   
-//  using maps instead
+  //  using maps instead
   typename DoFHandler<dim>::active_cell_iterator  cell = dof_handler.begin_active(),
                                                   endc = dof_handler.end();
   for (; cell!=endc; ++cell)
@@ -560,7 +562,11 @@ void BurgersProblem<dim>::compute_entropy_viscosity()
       Vector<double> aux = map_entropy_residual_K_q[cell]; 
       aux *= c_ent;
       // add the constant jump value for cell K
-      aux.add( c_jmp * map_jumps_K[cell] );
+      ones = 1.0;
+      ones *= c_jmp * map_jumps_K[cell];
+      aux += ones ;
+      // aux += c_jmp * map_jumps_K[cell];
+      
       // multiply by c_ent h^2 / norm_value
       aux *= ( std::pow(map_h_local[cell],2) / entropy_normalization );
       // store in appropriate map
@@ -750,7 +756,8 @@ void BurgersProblem<dim>::compute_viscosity(const double dt)
       if (cell->is_locally_owned())
       {
         map_viscosity_K[cell] = parameters->const_visc;
-        ones *= 0.0; ones.add(1.0);
+	//        ones *= 0.0; ones.add(1.0);
+        ones = 1.0;
         ones *= parameters->const_visc;
         map_viscosity_K_q[cell] = ones;
       } // end locally_owned if statement
@@ -764,7 +771,8 @@ void BurgersProblem<dim>::compute_viscosity(const double dt)
       {
         map_viscosity_K[cell]   = map_first_order_viscosity_K[cell];
         // map_viscosity_K_q[cell] = map_first_order_viscosity_K_q[cell];
-        ones *= 0.0; ones.add(1.0);
+	//        ones *= 0.0; ones.add(1.0);
+	ones = 1.0;
         ones *= map_first_order_viscosity_K[cell];
         map_viscosity_K_q[cell] = ones;
       } // end locally_owned if statement
@@ -787,7 +795,8 @@ void BurgersProblem<dim>::compute_viscosity(const double dt)
               aux(k) = map_first_order_viscosity_K_q[cell](k);           
         map_viscosity_K_q[cell] = aux ;
         // for comparison, I temporary use
-        ones *= 0.0; ones.add(1.0);
+	//        ones *= 0.0; ones.add(1.0);
+	ones = 1.0;
         ones *= std::min( map_entropy_viscosity_K[cell],map_first_order_viscosity_K[cell] ); 
         map_viscosity_K_q[cell] = ones;      
       } // end locally_owned if statement
@@ -1220,6 +1229,7 @@ void BurgersProblem<dim>::compute_tr_residual (const unsigned short stage_i   ,
   // add contribution of the previous stages
   for (unsigned short stage_j = 0; stage_j < stage_i; ++stage_j) 
     system_rhs.add(-dt*a[stage_i][stage_j] , previous_f[stage_j]);
+    // system_rhs -= (dt*a[stage_i][stage_j]) *  previous_f[stage_j];
  
   // make this the rhs of the linear system J^{tr} delta = -G
   system_rhs *= -1.0; // if matrix-free, we do not want this anymore
@@ -1275,14 +1285,16 @@ void BurgersProblem<dim>::assemble_tr_jacobian (const unsigned short stage_i    
   // if ESIDRK method, a[i][i] can be zero for a given stage (usually the first one)
   if( std::abs( a[stage_i][stage_i] ) < 1e-6 ) 
   {
-    system_matrix.add( 1.0 , mass_matrix);
+    system_matrix.add( mass_matrix , 1.0 );
+    //system_matrix.add( 1.0 , mass_matrix);
     return;
   }
 
   //    we do this so that the system matrix will have 1 on the diagonal for Dirichlet nodes, otherwise it would
   //    have:  1-dt.a_{ii}  and we do not want this to be = to zero for some given dt
   //    Also: J = M -dt.a.SSjac = -dt.a (M/(-dt.a) + SSjac)
-  system_matrix.add( -1.0/(dt*a[stage_i][stage_i]) , mass_matrix);
+  system_matrix.add( mass_matrix, -1.0/(dt*a[stage_i][stage_i]) );
+  //system_matrix.add( -1.0/(dt*a[stage_i][stage_i]) , mass_matrix);
   // compute ss jacobian (system_matrix is NOT reset to 0 in compute_ss_jacobian if false is given)
   bool is_steady_state = false;
   assemble_ss_jacobian(is_steady_state, stage_time);
@@ -1466,7 +1478,8 @@ std::pair<unsigned int, double> BurgersProblem<dim>::linear_solve (LA::MPI::Vect
       LA::SolverCG  solver (solver_control);
       LA::MPI::Vector completely_dist_solution(locally_owned_dofs,mpi_communicator);
       
-      LA::MPI::PreconditionSSOR preconditioner;
+//      LA::MPI::PreconditionSSOR preconditioner;
+      dealii::PETScWrappers::PreconditionNone preconditioner ;
       preconditioner.initialize(system_matrix);
 
       // solver only accepts locally owned dofs, thus use completely_dist_solution as container for the solve result
@@ -1511,7 +1524,8 @@ std::pair<unsigned int, double> BurgersProblem<dim>::mass_solve (LA::MPI::Vector
  
       //PreconditionSSOR<> preconditioner;
       // const double omega = parameters->ssor_omega;
-      LA::MPI::PreconditionSSOR preconditioner;
+//      LA::MPI::PreconditionSSOR preconditioner;
+      dealii::PETScWrappers::PreconditionNone preconditioner ;
       preconditioner.initialize(mass_matrix);
   
       // solver only accepts locally owned dofs, thus use completely_dist_solution as container for the solve result
@@ -1905,13 +1919,14 @@ void BurgersProblem<dim>::run ()
   // for fully explicit techniques, the jacobian matrix will be constant = Mass
   if(is_explicit) {
     system_matrix = 0.;
-    system_matrix.add(1, mass_matrix);
+    system_matrix.add(mass_matrix , 1.0);
+    //system_matrix.add(1, mass_matrix);
   }
   // AssertThrow (false, ExcMessage ("jcr stopping after steady state"));
 
 
   bool is_time_adaptive = parameters->is_cfl_time_adaptive;
-  double delta_t = parameters->time_step;
+  double delta_t = parameters->time_step;  // above, reference, here not, why?
   unsigned int n_time_steps=0;
   if(!is_time_adaptive){
     // we want to check time convergence and compare numerical solution
@@ -1934,6 +1949,12 @@ void BurgersProblem<dim>::run ()
     // set the number of time steps
     n_time_steps = n1;
   }
+
+
+  std::string str = "solu.txt"; std::ofstream o (str.c_str()); 
+  current_solution.print(o, 10,true,false);
+
+
 
   // ------                  ------- //
   // ------  transient solve ------- //
@@ -2012,8 +2033,13 @@ void BurgersProblem<dim>::run ()
                   << std::endl;*/
         tmp = current_solution;
         tm2 = newton_update;
+        
+        o.close(); str = "update" + Utilities::int_to_string(nonlin_iter,4) + ".txt"; o.open(str.c_str()); 
+        newton_update.print(o, 10,true,false);
+
         // add the newton update from the solve (newton_update only contains locally_owned dofs)
-        tmp.add(1.0, tm2);
+	//        tmp.add(1.0, tm2);
+	tmp += tm2;
         current_solution = tmp;
 
 
@@ -2056,6 +2082,7 @@ void BurgersProblem<dim>::run ()
     //    std::cout << "after mass.vmult" << std::endl;
     for (unsigned short stage_i = 0; stage_i < n_stages; ++stage_i) 
       system_rhs.add (delta_t * b[stage_i], previous_f[stage_i]);
+      // system_rhs += (delta_t * b[stage_i]) * previous_f[stage_i];
     std::pair<unsigned int, double> mass_convergence = mass_solve (current_solution);
 
     // output solution
@@ -2110,6 +2137,8 @@ int main (int argc, char* argv[])
     Parameters::AllParameters<dim>::declare_parameters (prm); // done this way b/c static (this is ugly)
 
     char *input_filename = argv[1];
+    prm.print_parameters (std::cout, ParameterHandler::Text);
+
     prm.read_input (input_filename);
 
     Parameters::AllParameters<dim> parameters;

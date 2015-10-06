@@ -66,7 +66,7 @@ double InitialData<dim>::value (const Point<dim>   &point,
 {
   Assert( component == 0 , ExcIndexRange( component , 0 , 1 ) ); 
 
-  double returned_value;
+  double returned_value = -999.;
   if (component == MyComponents::burgers_component) {
     returned_value = math_formula(point,component);
   }
@@ -86,6 +86,8 @@ double InitialData<dim>::math_formula(const Point<dim>   &point,
   Assert (comp < this->n_components, ExcIndexRange( comp, 0, this->n_components) );
 
   double value = 1.0;
+
+std::cout << "pbID = " << pbID << std::endl;
 
   switch(pbID)
     {

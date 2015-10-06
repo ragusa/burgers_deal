@@ -135,7 +135,7 @@ double ExactSolution<dim>::math_formula(const Point<dim>   &point,
           return_value = -0.2;
       else if(x >  0.5 && y <= 0.5)
           return_value =  0.8;
-      else if(x >  0.5 && y >  0.5)
+      else //if(x >  0.5 && y >  0.5)
           return_value = -1.0;
       
     }
@@ -169,7 +169,7 @@ double ExactSolution<dim>::math_formula(const Point<dim>   &point,
         else
           return_value = (2.0*x-1.0)/(2.0*t);
         }
-      else if(x > 0.5+0.8*t)
+      else //if(x > 0.5+0.8*t)
         {
         if(y >= 0.5-0.1*t)
           return_value = -1.0;
