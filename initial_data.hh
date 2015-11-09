@@ -87,7 +87,7 @@ double InitialData<dim>::math_formula(const Point<dim>   &point,
 
   double value = 1.0;
 
-std::cout << "pbID = " << pbID << std::endl;
+// std::cout << "pbID = " << pbID << std::endl;
 
   switch(pbID)
     {

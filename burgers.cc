@@ -187,6 +187,9 @@ private:
   ConditionalOStream                         pcout;
   TimerOutput                                computing_timer;
 
+  const unsigned int                         console_print_out_;
+  const unsigned int                         vtk_output_frequency_;
+  
   ConstraintMatrix                           constraints;
 
   IndexSet                                   locally_owned_dofs;
@@ -268,7 +271,9 @@ BurgersProblem<dim>::BurgersProblem (const Parameters::AllParameters<dim> *const
           == 0)),
   computing_timer (pcout,
                    TimerOutput::summary,
-                   TimerOutput::wall_times)
+                   TimerOutput::wall_times),
+ console_print_out_(parameters->console_print_out),
+ vtk_output_frequency_(parameters->vtk_output_frequency)
 {
   //pcout.set_condition (parameters->output == Parameters::Solver::verbose);
   
@@ -285,6 +290,8 @@ BurgersProblem<dim>::BurgersProblem (const Parameters::AllParameters<dim> *const
   for (unsigned short s = 0; s < n_stages; ++s)
     pcout << "b[" << s << "]=" << b[s] <<"    ";
   pcout << "\n";
+  
+  // AssertThrow(false, ExcMessage(" stopping after constructor"));
 }
 
 // **********************************************************************************
@@ -317,6 +324,7 @@ void BurgersProblem<dim>::setup_system ()
         
     //const unsigned int n_act_cells = triangulation.n_locally_owned_active_cells();
     
+    // clear all maps
     map_entropy_residual_K.clear(); 
     map_entropy_viscosity_K.clear(); 
     map_first_order_viscosity_K.clear(); 
@@ -328,21 +336,27 @@ void BurgersProblem<dim>::setup_system ()
     map_viscosity_K_q.clear(); 
     
     // dof handler
-    dof_handler.clear ();
+    dof_handler.clear();
     dof_handler.distribute_dofs (fe);
-    DoFRenumbering::component_wise (dof_handler); // DoFRenumbering::Cuthill_McKee(dof_handler);
+    DoFRenumbering::component_wise (dof_handler); 
+    // DoFRenumbering::Cuthill_McKee(dof_handler);
     
     locally_owned_dofs = dof_handler.locally_owned_dofs ();
     DoFTools::extract_locally_relevant_dofs (dof_handler, locally_relevant_dofs);
     
+    // 4 solution vectors with ghost entries
     current_solution.reinit (locally_owned_dofs,locally_relevant_dofs,mpi_communicator);
     old_solution.reinit     (locally_owned_dofs,locally_relevant_dofs,mpi_communicator);
     older_solution.reinit   (locally_owned_dofs,locally_relevant_dofs,mpi_communicator);
     oldest_solution.reinit  (locally_owned_dofs,locally_relevant_dofs,mpi_communicator);
+    // previous entropy with ghost entries. jcr 
     old_entropy.reinit      (locally_owned_dofs,locally_relevant_dofs,mpi_communicator);
+    // tmp vector. what for? jcr
     tmp_vect_relev.reinit   (locally_owned_dofs,locally_relevant_dofs,mpi_communicator);
 
+    // tmp vector of only locally-owned size
     tmp_vect_owned.reinit   (locally_owned_dofs,mpi_communicator);
+    // rhs
     system_rhs.reinit       (locally_owned_dofs,mpi_communicator);
     
     // Y is a solution. It needs to have ghost entries
@@ -350,15 +364,18 @@ void BurgersProblem<dim>::setup_system ()
     for (unsigned short stage = 0; stage < n_stages; ++stage) 
       Y[stage].reinit (locally_owned_dofs,locally_relevant_dofs,mpi_communicator);
       
-    // previous_f contributes tot he system rhs. It only needs to be of size locally_owned
+    // previous_f contributes to the system rhs. It only needs to be of size locally_owned
     previous_f = std::vector<LA::MPI::Vector> (n_stages, LA::MPI::Vector ());
     for (unsigned short stage = 0; stage < n_stages; ++stage) 
       previous_f[stage].reinit (locally_owned_dofs,mpi_communicator);
       
-    
+    // initialize cell iterators
     typename DoFHandler<dim>::active_cell_iterator  cell = dof_handler.begin_active(),
                                                     endc = dof_handler.end();
       
+    // ------------------------------
+    // compute h_min and total volume
+    // ------------------------------
     double h_min_local = 1.E100;
     double volume_of_domain_local = 0.0;
     map_h_local.clear();
@@ -370,7 +387,7 @@ void BurgersProblem<dim>::setup_system ()
         map_h_local[cell] = cell->diameter();
         // alt.: map_h_local[cell] = std::pow( cell->measure(), 1./dim ) ;
       }
-    
+    // get values from all partitions
     MPI_Allreduce(&h_min_local, &h_min, 1, MPI_DOUBLE, MPI_MIN, mpi_communicator);
     // make sure volume_of_domain has been reset to 0.
     volume_of_domain = 0.0;
@@ -378,6 +395,9 @@ void BurgersProblem<dim>::setup_system ()
     
   }
   
+  // -------------------
+  // compute constraints
+  // -------------------
   constraints.clear ();
   constraints.reinit (locally_relevant_dofs);
   DoFTools::make_hanging_node_constraints (dof_handler, constraints);
@@ -386,9 +406,8 @@ void BurgersProblem<dim>::setup_system ()
     for (unsigned int cmp_i = 0; cmp_i < MyComponents::n_components; ++cmp_i)
       if (parameters->boundary_conditions[bd_id].type_of_bc[cmp_i] == Parameters::Dirichlet) 
       {
-        pcout << "boundary_id = " << bd_id  
-              << "\t"             << parameters->boundary_conditions[bd_id].type_of_bc[cmp_i] 
-              << std::endl;
+        if(console_print_out_>=5)
+          pcout << "boundary_id = " << bd_id << "\t"             << parameters->boundary_conditions[bd_id].type_of_bc[cmp_i]  << std::endl;
         std::vector<bool> mask (MyComponents::n_components, false);
         mask[cmp_i] = true;
         VectorTools::interpolate_boundary_values (dof_handler,
@@ -399,14 +418,25 @@ void BurgersProblem<dim>::setup_system ()
       }
   
   constraints.close(); 
-  /*
-  In case the constraints are already taken care of in this function, it is possible to neglect off-diagonal entries in the sparsity pattern. When using ConstraintMatrix::distribute_local_to_global during assembling, no entries will ever be written into these matrix position, so that one can save some computing time in matrix-vector products by not even creating these elements. In that case, the variable keep_constrained_dofs needs to be set to false.
-  */
 
+  // ----------------
+  // sparsity pattern
+  // ----------------
+
+  /*
+  In case the constraints are already taken care of in this function, it is possible 
+  to neglect off-diagonal entries in the sparsity pattern. 
+  When using ConstraintMatrix::distribute_local_to_global during assembling, 
+  no entries will ever be written into these matrix position, so that one can save 
+  some computing time in matrix-vector products by not even creating these elements. 
+  In that case, the variable keep_constrained_dofs needs to be set to false.
+  */ // jcr ask about this
+
+  const bool keep_constrained_dofs = false;
   DynamicSparsityPattern dyn_sparsity_pattern (locally_relevant_dofs);
   DoFTools::make_sparsity_pattern (dof_handler, 
                                    dyn_sparsity_pattern, 
-                                   constraints, false); 
+                                   constraints, keep_constrained_dofs); 
   SparsityTools::distribute_sparsity_pattern (dyn_sparsity_pattern,
                                               dof_handler.n_locally_owned_dofs_per_processor(),
                                               mpi_communicator,
@@ -417,9 +447,13 @@ void BurgersProblem<dim>::setup_system ()
   // mass matrix 
   mass_matrix.reinit (locally_owned_dofs,locally_owned_dofs,dyn_sparsity_pattern,mpi_communicator);
 
+  // -----------------------------------
+  // entropy viscosity tuning parameters
+  // -----------------------------------
   c_max = parameters->c_max;
   c_ent = parameters->c_ent;
   c_jmp = parameters->c_jmp;
+  
 }
 
 
@@ -432,6 +466,16 @@ void BurgersProblem<dim>::setup_system ()
 template<int dim>
 void BurgersProblem<dim>::compute_entropy_residual(const double dt)
 {
+  /** computes the entropy residual as 
+    R = (Eold-Eolder)/dt + E'.f'.grad(u)
+    
+    the residual eq is obtained by multiplying the governing equation, dU/dU+div(f) by E'=dE/du
+    The spatial term becomes: 
+      E' div(f) = E' (df1/dx + df2/dy)  
+                = E' (df1/du du/dx + df1/dv dv/dx + df2/du du/dy + df2/dv dv/dy)
+    For Burgers, f=[f1,f2], with f1=u^/2 and f2=v^2/2
+  */
+  
   const UpdateFlags update_flags = update_values | update_gradients | update_JxW_values ;
   FEValues<dim> fe_values (fe, quadrature, update_flags);
 
@@ -446,13 +490,14 @@ void BurgersProblem<dim>::compute_entropy_residual(const double dt)
   std::vector<double> entropy_prime_old_local(n_q_pts);
   std::vector<double> ent_residual_local     (n_q_pts);
 
-  pcout <<"dt in residual " << dt << " " << "\tvolume " << volume_of_domain << std::endl;
+  if(console_print_out_>=5)
+    pcout <<"dt in entropy residual " << dt << "\tvolume " << volume_of_domain << std::endl;
 
   typename DoFHandler<dim>::active_cell_iterator  cell = dof_handler.begin_active(),
                                                   endc = dof_handler.end();
   
   // reset the average entropy value
-  double entropy_average_local=0.0;
+  double entropy_average_local = 0.;
   
   // loop on the active cells
   for (; cell!=endc; ++cell) 
@@ -460,8 +505,8 @@ void BurgersProblem<dim>::compute_entropy_residual(const double dt)
     {
       fe_values.reinit (cell);                 
       // local values of u      
-      fe_values.get_function_values(old_solution    ,u_old_local);
-      fe_values.get_function_values(older_solution  ,u_older_local);
+      fe_values.get_function_values(old_solution   ,u_old_local);
+      fe_values.get_function_values(older_solution ,u_older_local);
       // local values of grad u      
       fe_values.get_function_gradients(old_solution ,grad_u_old_local);
       
@@ -475,19 +520,18 @@ void BurgersProblem<dim>::compute_entropy_residual(const double dt)
         // local values of f_ prime
         flx_prime_old_local[q]     = flux.flx_f_prime(u_old_local[q]);
         
-        // update the average entropy
+        // increment the average entropy
         entropy_average_local +=entropy_old_local[q] * fe_values.JxW(q);
         
-        /*        std::cout << "entropies "   << entropy_old_local[q]       << " " << entropy_older_local[q] 
+        /*        
+        std::cout << "entropies "   << entropy_old_local[q]       << " " << entropy_older_local[q] 
                   << ", ent prime " << entropy_prime_old_local[q] 
                   << ", f  prime  " << flx_prime_old_local[q]     
                   << ", grad u    " << grad_u_old_local[q]
-                  << std::endl;
-        
+                  << std::endl;  
         */
 
-        // finally, evaluate the entropy residual on each cell, at each qp
-        // using De = dS/dt + E'.f'.grad(u)
+        // evaluate the entropy residual on each cell, at each qp
         ent_residual_local[q]  = ( entropy_old_local[q] - entropy_older_local[q] ) / dt;
         ent_residual_local[q] += entropy_prime_old_local[q] * flx_prime_old_local[q] * grad_u_old_local[q] ;
         ent_residual_local[q] = std::fabs(ent_residual_local[q]); 
@@ -509,11 +553,12 @@ void BurgersProblem<dim>::compute_entropy_residual(const double dt)
 
     } // end locally_owned if statement
   
-  // finalize entropy average value
+  // finalize entropy average value (obtain values from partitions)
   entropy_average_local /= volume_of_domain;
   entropy_average=0.0;
   MPI_Allreduce(&entropy_average_local, &entropy_average, 1, MPI_DOUBLE, MPI_SUM, mpi_communicator);
-  pcout << "entropy_average = " << entropy_average << std::endl;
+  if(console_print_out_>=5)
+    pcout << "entropy_average = " << entropy_average << std::endl;
   
   // compute || S - Save || _\infty
   double entropy_normalization_local = -1.0;
@@ -532,7 +577,9 @@ void BurgersProblem<dim>::compute_entropy_residual(const double dt)
   // compute and distribute entropy_normalization among all procs
   entropy_normalization=-1.0;
   MPI_Allreduce(&entropy_normalization_local, &entropy_normalization, 1, MPI_DOUBLE, MPI_MAX, mpi_communicator);
-  pcout << "entropy_normalization = " << entropy_normalization << std::endl;
+  if(console_print_out_>=5)
+    pcout << "entropy_normalization = " << entropy_normalization << std::endl;
+
 }
   
 // **********************************************************************************
@@ -555,22 +602,26 @@ void BurgersProblem<dim>::compute_entropy_viscosity()
   for (; cell!=endc; ++cell)
     if (cell->is_locally_owned()) 
     {
+      
+      // compute entropy viscosity on the whole cell
       map_entropy_viscosity_K[cell] = std::pow(map_h_local[cell],2) 
-                                      * ( c_ent * map_entropy_residual_K[cell] + c_jmp * map_jumps_K[cell] ) 
-                                      / entropy_normalization ;
+                    * ( c_ent * map_entropy_residual_K[cell] + c_jmp * map_jumps_K[cell] ) 
+                    / entropy_normalization ;
+      
+      // compute entropy viscosity at qp
       // store in aux Vector the entropy residual on cell K for all quadrature pts
       Vector<double> aux = map_entropy_residual_K_q[cell]; 
       aux *= c_ent;
       // add the constant jump value for cell K
-      ones = 1.0;
-      ones *= c_jmp * map_jumps_K[cell];
+      // old way: aux += c_jmp * map_jumps_K[cell];
+      // new way:
+      ones = 1.0; ones *= c_jmp * map_jumps_K[cell];
       aux += ones ;
-      // aux += c_jmp * map_jumps_K[cell];
-      
       // multiply by c_ent h^2 / norm_value
       aux *= ( std::pow(map_h_local[cell],2) / entropy_normalization );
       // store in appropriate map
       map_entropy_viscosity_K_q[cell] =  aux ;
+      
       // now that the raw jump value is no longer needed, put the final value for output purposes
       map_jumps_K[cell] *= std::pow(map_h_local[cell],2) / entropy_normalization;
     }
@@ -587,8 +638,8 @@ template<int dim>
 void BurgersProblem<dim>::compute_first_order_viscosity()
 {
   // fe stuff
-  const UpdateFlags update_flags = update_values ;
-  FEValues<dim> fe_values (fe, quadrature, update_flags);
+  const UpdateFlags update_cell_flags = update_values ;
+  FEValues<dim> fe_values (fe, quadrature, update_cell_flags);
 
   typename DoFHandler<dim>::active_cell_iterator  cell = dof_handler.begin_active(),
                                                   endc = dof_handler.end();
@@ -605,13 +656,14 @@ void BurgersProblem<dim>::compute_first_order_viscosity()
       fe_values.reinit (cell);                 
       fe_values.get_function_values(current_solution,u_current_local);
       
-      for (unsigned int q = 0; q < n_q_pts; ++q){
+      for (unsigned int q = 0; q < n_q_pts; ++q)
+      {
         flx_prime_current_local    = flux.flx_f_prime(u_current_local[q]);
         propagation_speed_local[q] = flux.propagation_speed(flx_prime_current_local);
       }
       max_speed = *max_element( propagation_speed_local.begin(), propagation_speed_local.end() );
       // use maps for 1st order visc on cell
-      map_first_order_viscosity_K[cell]   = c_max * map_h_local[cell] * max_speed;
+      map_first_order_viscosity_K[cell] = c_max * map_h_local[cell] * max_speed;
       // use maps for 1st order visc at quad pts
       Vector<double> aux(propagation_speed_local.begin(),propagation_speed_local.end());
       aux *= c_max * map_h_local[cell];
@@ -756,7 +808,7 @@ void BurgersProblem<dim>::compute_viscosity(const double dt)
       if (cell->is_locally_owned())
       {
         map_viscosity_K[cell] = parameters->const_visc;
-	//        ones *= 0.0; ones.add(1.0);
+	      // ones *= 0.0; ones.add(1.0);
         ones = 1.0;
         ones *= parameters->const_visc;
         map_viscosity_K_q[cell] = ones;
@@ -771,8 +823,8 @@ void BurgersProblem<dim>::compute_viscosity(const double dt)
       {
         map_viscosity_K[cell]   = map_first_order_viscosity_K[cell];
         // map_viscosity_K_q[cell] = map_first_order_viscosity_K_q[cell];
-	//        ones *= 0.0; ones.add(1.0);
-	ones = 1.0;
+	      // ones *= 0.0; ones.add(1.0);
+	      ones = 1.0;
         ones *= map_first_order_viscosity_K[cell];
         map_viscosity_K_q[cell] = ones;
       } // end locally_owned if statement
@@ -795,8 +847,8 @@ void BurgersProblem<dim>::compute_viscosity(const double dt)
               aux(k) = map_first_order_viscosity_K_q[cell](k);           
         map_viscosity_K_q[cell] = aux ;
         // for comparison, I temporary use
-	//        ones *= 0.0; ones.add(1.0);
-	ones = 1.0;
+	      // ones *= 0.0; ones.add(1.0);
+	      ones = 1.0;
         ones *= std::min( map_entropy_viscosity_K[cell],map_first_order_viscosity_K[cell] ); 
         map_viscosity_K_q[cell] = ones;      
       } // end locally_owned if statement
@@ -876,15 +928,15 @@ template<int dim>
 double BurgersProblem<dim>::compute_dt()
 {
    
-  const UpdateFlags update_flags = update_values ;
-  FEValues<dim> fe_values (fe, quadrature, update_flags);
+  const UpdateFlags update_cell_flags = update_values ;
+  FEValues<dim> fe_values (fe, quadrature, update_cell_flags);
   typename DoFHandler<dim>::active_cell_iterator  cell = dof_handler.begin_active(),
                                                   endc = dof_handler.end();
   // local vars
   std::vector<double> u_current_local(n_q_pts);
   Tensor<1,dim> flx_prime_current_local;
   std::vector<double> propagation_speed_local(n_q_pts);
-  double max_speed=-1.0;
+  double max_speed_local=-1.0;
   double aux;
 
   // loop over active cells
@@ -898,19 +950,28 @@ double BurgersProblem<dim>::compute_dt()
       {
         flx_prime_current_local    = flux.flx_f_prime(u_current_local[q]);
         propagation_speed_local[q] = flux.propagation_speed(flx_prime_current_local);
+ //       pcout<<u_current_local[q]<<"\t"<<flx_prime_current_local<<"\t"<<propagation_speed_local[q]<<std::endl;
       }
       aux = *max_element( propagation_speed_local.begin(), propagation_speed_local.end() );
-      max_speed = std::max( max_speed, aux );
+      max_speed_local = std::max( max_speed_local, aux );
+  //    pcout<<max_speed_local<<std::endl;
     } // end locally_owned if statement
+
+  // get values from all partitions
+  double max_speed=0.;
+  MPI_Allreduce(&max_speed_local, &max_speed, 1, MPI_DOUBLE, MPI_MAX, mpi_communicator);
 
   // update dt
   double dt = parameters->cfl * h_min / max_speed;
-  pcout << "compute_dt : \n" 
-        << "\t cfl="       << parameters->cfl 
-        << "\t h_min="     << h_min 
-        << "\t max_speed=" << max_speed 
-        << "\t dt="        << dt 
-        << std::endl; 
+  if(console_print_out_ >= 1)
+  {
+    pcout << "compute_dt : \n" 
+          << "\t cfl="       << parameters->cfl 
+          << "\t h_min="     << h_min 
+          << "\t max_speed=" << max_speed 
+          << "\t dt="        << dt 
+          << std::endl; 
+  }
   return dt;
 }
 
@@ -924,10 +985,10 @@ template <int dim>
 void BurgersProblem<dim>::assemble_mass_matrix ()
 {        
   // reset the matrix
-  mass_matrix = 0.0;
+  mass_matrix = 0.;
 
-  const UpdateFlags update_flags = update_values | update_JxW_values ;
-  FEValues<dim> fe_values (fe, quadrature, update_flags);
+  const UpdateFlags update_cell_flags = update_values | update_JxW_values ;
+  FEValues<dim> fe_values (fe, quadrature, update_cell_flags);
 
   const unsigned int dofs_per_cell = dof_handler.get_fe().dofs_per_cell;
   std::vector<unsigned int> local_dof_indices (dofs_per_cell);
@@ -948,9 +1009,9 @@ void BurgersProblem<dim>::assemble_mass_matrix ()
       for (unsigned int q_point = 0; q_point < n_q_pts; ++q_point)
         for (unsigned int i=0; i<dofs_per_cell; ++i)
           for (unsigned int j=0; j<dofs_per_cell; ++j) 
-            local_mass(i, j) +=   fe_values.shape_value_component(i, q_point, burgers_component)
-                                * fe_values.shape_value_component(j, q_point, burgers_component)
-                                * fe_values.JxW(q_point);
+            local_mass(i,j) +=   fe_values.shape_value_component(i, q_point, burgers_component)
+                               * fe_values.shape_value_component(j, q_point, burgers_component)
+                              * fe_values.JxW(q_point);
       // add to global matrix
       constraints.distribute_local_to_global (local_mass, local_dof_indices, mass_matrix );
       
@@ -970,18 +1031,19 @@ void BurgersProblem<dim>::compute_ss_residual (bool is_steady_state,
                                                const double time   )
 {        
   // reset to zero the global rhs vector
-  system_rhs = 0.0;
+  system_rhs = 0.;
 
   // we also update the values in order to get real point to integrate, for instance, source terms
-  const UpdateFlags update_flags      = update_values | update_gradients | update_q_points | update_JxW_values,
-                    face_update_flags = update_values | update_gradients | update_q_points | update_JxW_values |
+  const UpdateFlags update_cell_flags = update_values | update_gradients | update_q_points | update_JxW_values,
+                    update_face_flags = update_values | update_gradients | update_q_points | update_JxW_values |
                                         update_normal_vectors;
 
-  FEValues<dim>     fe_values      (fe, quadrature,      update_flags);
-  FEFaceValues<dim> fe_face_values (fe, face_quadrature, face_update_flags);
+  FEValues<dim>     fe_values      (fe, quadrature,      update_cell_flags);
+  FEFaceValues<dim> fe_face_values (fe, face_quadrature, update_face_flags);
 
   const unsigned int burgers_component  = MyComponents::burgers_component;
 
+  // local vars
   const unsigned int dofs_per_cell  = dof_handler.get_fe().dofs_per_cell;
   const unsigned int faces_per_cell = GeometryInfo<dim>::faces_per_cell;
   std::vector<unsigned int> local_dof_indices (dofs_per_cell);
@@ -1008,11 +1070,11 @@ void BurgersProblem<dim>::compute_ss_residual (bool is_steady_state,
         flx_prime_local[q] = flux.flx_f_prime(current_solution_values[q]);
           
       // the LOCAL steady state residual is (we write the SS residual on the RHS of the governing law)
-      //        Burgers equation is: du/dt + div(iflx+vflx) = 0
-      //  where iflx = inviscid flux = u^2/2
-      //        vflx = viscous  flux = -mu grad(u)
+      //        Burgers equation is: dU/dt + div(iflx+vflx) = 0
+      //  where iflx = inviscid flux = U^2/2 = [u^2; v^2]/2
+      //        vflx = viscous  flux = -mu grad(U)
       //
-      // Weak form on div(fluxes) on the RHS:
+      // Weak form on div(fluxes) on the RHS (hence the - sign):
       // \int_K [-div(fluxes)b]  = -\int_K b div(u^2)/2      - \int_K div(vflx) b   
       //                         = -\int_K b f_prime.grad(u) + \int_K (vflx).grad(b)     - \int_{dK} vflx.n b  
       //                         = -\int_K b f_prime.grad(u) - \int_K mu grad(u).grad(b) + \int_{dK} mu grad(u).n b  
@@ -1022,11 +1084,11 @@ void BurgersProblem<dim>::compute_ss_residual (bool is_steady_state,
       local_f=0.;
       for (unsigned int q_point = 0; q_point < n_q_pts; ++q_point)
          for (unsigned int i=0; i<dofs_per_cell; ++i)
-            // steady state local residual (the f(t,u) function in du/dt = f(t,u), that is on the RHS of that eq. )
+            // steady state local residual (the f(t,u) function in du/dt = f(t,u) that is on the RHS)
             local_f(i)-= (  fe_values.shape_value_component(i, q_point, burgers_component)
                             * flx_prime_local[q_point]
                             * current_solution_gradients[q_point]
-                         + fe_values.shape_grad_component(i, q_point, burgers_component)
+                          +fe_values.shape_grad_component(i, q_point, burgers_component)
         //                  * viscosity_K_q[ii](q_point) // bad idea with 1st order visc
         //                    * viscosity_K(ii)
         //                    * map_viscosity_K[cell]
@@ -1054,7 +1116,8 @@ void BurgersProblem<dim>::compute_ss_residual (bool is_steady_state,
   
   system_rhs.compress(VectorOperation::add);
 
-  // if we are doing a SS calc, we put the current f on the rhs and enforce the BC
+  // if we are doing a SS calc, we put the current f on the system_rhs of Newton's solve
+  // and enforce the BC
   if( is_steady_state )
   {
     // the rhs of the steady state is -f ( J delta = -f )
@@ -1064,7 +1127,8 @@ void BurgersProblem<dim>::compute_ss_residual (bool is_steady_state,
     const unsigned short n_boundaries = parameters->n_boundaries;
     for (unsigned short bd_id = 0; bd_id < n_boundaries; ++bd_id) 
       for (unsigned int cmp_i = 0; cmp_i < MyComponents::n_components; ++cmp_i) 
-        if (parameters->boundary_conditions[bd_id].type_of_bc[cmp_i] == Parameters::Dirichlet) {
+        if (parameters->boundary_conditions[bd_id].type_of_bc[cmp_i] == Parameters::Dirichlet) 
+        {
           std::vector<bool> mask (MyComponents::n_components, false);
           mask[cmp_i] = true;
           VectorTools::interpolate_boundary_values (dof_handler,
@@ -1094,20 +1158,18 @@ void BurgersProblem<dim>::assemble_ss_jacobian (const bool is_steady_state,
 
 {
   // reset the jacobian matrix in steady state (in transient, it already contains the Mass matrix)
-  if( is_steady_state) 
+  if(is_steady_state) 
      system_matrix = 0.;
 
   // we also update the values in order to get real point to integrate, for instance, source terms
-  const UpdateFlags update_flags      = update_values | update_gradients | update_q_points | update_JxW_values,
-                    face_update_flags = update_values | update_gradients | update_q_points | update_JxW_values |
+  const UpdateFlags update_cell_flags = update_values | update_gradients | update_q_points | update_JxW_values,
+                    update_face_flags = update_values | update_gradients | update_q_points | update_JxW_values |
                                         update_normal_vectors;
 
-  FEValues<dim>     fe_values      (fe, quadrature, 
-                                    update_flags);
-  FEFaceValues<dim> fe_face_values (fe, face_quadrature, 
-                                    face_update_flags);
+  FEValues<dim>     fe_values      (fe, quadrature     , update_cell_flags);
+  FEFaceValues<dim> fe_face_values (fe, face_quadrature, update_face_flags);
 
-  const unsigned int burgers_component  = MyComponents::burgers_component;
+  const unsigned int burgers_component = MyComponents::burgers_component;
 
   const unsigned int dofs_per_cell = dof_handler.get_fe().dofs_per_cell;
   const unsigned int faces_per_cell = GeometryInfo<dim>::faces_per_cell;
@@ -1205,25 +1267,26 @@ void BurgersProblem<dim>::compute_tr_residual (const unsigned short stage_i   ,
                                                const double         dt        )
 {        
   
+  // these vectors do not contain locally relevant dofs
   LA::MPI::Vector u     (locally_owned_dofs,mpi_communicator);
   LA::MPI::Vector u_old (locally_owned_dofs,mpi_communicator);
   
-  int i=0;
-
-  // put M(Y_i - u_n) in residual G, current_solution plays the role of Y_i
+  // put M(Y_i - u_n) in residual G_i, current_solution plays the role of Y_i
+  // jcr why only locally owned when doing M*u ?
   u     = current_solution;
   u_old = old_solution;
   u -= u_old;
-  mass_matrix.vmult(previous_f[stage_i], u); 
+  // mass_matrix.vmult(previous_f[stage_i], u); 
+  mass_matrix.vmult(tmp_vect_owned, u); 
   
   // compute f(t_i,Y_i) ( system_rhs is reset to 0 in compute_ss_residual to keep f(Y_i) )
   bool is_steady_state = false ;
   compute_ss_residual(is_steady_state,stage_time);
-  // save f(y_i)
+  // save f(t_i,Y_i)
   previous_f[stage_i] = system_rhs ;
   
   // add contribution (steady state residual) of the current stage
-  // after this line, rhs = M(Y_i-un) -dt.a_{ii} f(Y_i)
+  // after this line, rhs = M(Y_i-un) -dt.a_{ii} f(t_i,Y_i)
   system_rhs.sadd( -dt*a[stage_i][stage_i] , tmp_vect_owned) ; 
 
   // add contribution of the previous stages
@@ -1233,8 +1296,6 @@ void BurgersProblem<dim>::compute_tr_residual (const unsigned short stage_i   ,
  
   // make this the rhs of the linear system J^{tr} delta = -G
   system_rhs *= -1.0; // if matrix-free, we do not want this anymore
-
-  //  std::cout << "here " << i << std::endl; ++i;
 
   // zero-out the residual G(Y) at the Dirichlet nodes ???????
   std::map<unsigned int, double> boundary_values; 
@@ -1247,7 +1308,8 @@ void BurgersProblem<dim>::compute_tr_residual (const unsigned short stage_i   ,
         mask[cmp_i] = true;
         VectorTools::interpolate_boundary_values (dof_handler,
                                                   bd_id,
-                                                  ConstantFunction<dim>(parameters->boundary_conditions[bd_id].values[cmp_i], MyComponents::n_components),
+                                                  ZeroFunction<dim>(MyComponents::n_components), 
+// why is it a constant function to zero out the residual? ConstantFunction<dim>(parameters->boundary_conditions[bd_id].values[cmp_i], MyComponents::n_components),
                                                   boundary_values,              
                                                   mask);
       } // end if Dirichlet
@@ -1256,8 +1318,6 @@ void BurgersProblem<dim>::compute_tr_residual (const unsigned short stage_i   ,
     system_rhs(it->first) = (it->second);
 
   system_rhs.compress(VectorOperation::insert);
-
-  //  std::cout << "here " << i << std::endl; ++i;
 
 }
 
@@ -1275,35 +1335,38 @@ void BurgersProblem<dim>::assemble_tr_jacobian (const unsigned short stage_i    
                                                 const bool           is_explicit)
 {        
 
-  // if explicit, no need to spend time in computing the steady-state jacobian, nor in re-assigning M to J
+  // if explicit, no need to spend time in computing the steady-state jacobian, 
+  // nor in re-assigning M to J
   if(is_explicit)
      return;
   
-  // reset system matrix (puts 0's)
+  // reset system matrix (put 0's)
   system_matrix = 0.;
 
-  // if ESIDRK method, a[i][i] can be zero for a given stage (usually the first one)
-  if( std::abs( a[stage_i][stage_i] ) < 1e-6 ) 
+  // if ESDIRK method, a[i][i] can be zero for a given stage (usually the first one)
+  if( std::abs( a[stage_i][stage_i] ) < 1e-8 ) 
   {
     system_matrix.add( mass_matrix , 1.0 );
     //system_matrix.add( 1.0 , mass_matrix);
     return;
   }
 
-  //    we do this so that the system matrix will have 1 on the diagonal for Dirichlet nodes, otherwise it would
-  //    have:  1-dt.a_{ii}  and we do not want this to be = to zero for some given dt
-  //    Also: J = M -dt.a.SSjac = -dt.a (M/(-dt.a) + SSjac)
+  // we do this so that the system matrix will have 1 on the diagonal for Dirichlet nodes, 
+  // otherwise it is:  1-dt.a_{ii}  and we do not want this to be = to zero for some given dt
+  // Also: J = M -dt.a.SSjac = -dt.a (M/(-dt.a) + SSjac)
   system_matrix.add( mass_matrix, -1.0/(dt*a[stage_i][stage_i]) );
   //system_matrix.add( -1.0/(dt*a[stage_i][stage_i]) , mass_matrix);
-  // compute ss jacobian (system_matrix is NOT reset to 0 in compute_ss_jacobian if false is given)
+  // compute ss jacobian 
+  // (system_matrix is NOT reset to 0 in compute_ss_jacobian if is_steady_state=false is given)
   bool is_steady_state = false;
   assemble_ss_jacobian(is_steady_state, stage_time);
   // multiply by: -dt.a_{ii} in order to get J = M - dt.a_{ii}*SSjac
-  //   remember that Dirichlet BC have G=0 so it is not important 
+  //   remember that Dirichlet BCs have G=0 so it is not important 
   //   that we multiplied the diagonal entries of these rows here
   system_matrix *= ( -dt*a[stage_i][stage_i] ) ;
 
   /* alternate that may not work for non-zero Dirichlet BC
+  //    jcr: why, G=0 for any Dirichlet BCs...
   // compute ss jacobian 
   assemble_ss_jacobian(stage_time);
 
@@ -1316,6 +1379,7 @@ void BurgersProblem<dim>::assemble_tr_jacobian (const unsigned short stage_i    
 
 
 /*
+
 // **********************************************************************************
 // ---                               ---
 // --- compute_ss_residual_cell_term ---
@@ -1476,6 +1540,7 @@ std::pair<unsigned int, double> BurgersProblem<dim>::linear_solve (LA::MPI::Vect
 
       SolverControl  solver_control (system_rhs.size(), linear_tol );
       LA::SolverCG  solver (solver_control);
+      // jcr : is it ok for performance to create this solution vector here each time?
       LA::MPI::Vector completely_dist_solution(locally_owned_dofs,mpi_communicator);
       
 //      LA::MPI::PreconditionSSOR preconditioner;
@@ -1605,9 +1670,9 @@ void BurgersProblem<dim>::output_solution (const unsigned int time_step_no) cons
   // ----------------------
   // output solution to vtu
   const  std::string filename = "solution-" +  
-                                Utilities::int_to_string (time_step_no, 4) + 
+                                Utilities::int_to_string(triangulation.locally_owned_subdomain(), 4) + 
                                 "." +
-                                Utilities::int_to_string(triangulation.locally_owned_subdomain(), 4);
+                                Utilities::int_to_string (time_step_no, 4) ;
   std::ofstream output ((filename + ".vtu").c_str());  // write vtu file
   data_out.write_vtu (output);
   // create master record
@@ -1616,9 +1681,9 @@ void BurgersProblem<dim>::output_solution (const unsigned int time_step_no) cons
     std::vector<std::string> filenames;
     for (unsigned int i=0; i<Utilities::MPI::n_mpi_processes(mpi_communicator); ++i)
         filenames.push_back ("solution-" +
-                             Utilities::int_to_string (time_step_no, 4) +
-                             "." +
                              Utilities::int_to_string (i, 4) +
+                             "." +
+                             Utilities::int_to_string (time_step_no, 4) +
                              ".vtu");
     std::ofstream master_output ((filename + ".pvtu").c_str());
     data_out.write_pvtu_record (master_output, filenames);
@@ -1773,7 +1838,7 @@ void BurgersProblem<dim>::output_exact_solution (const unsigned int time_step_no
 template <int dim>
 void BurgersProblem<dim>::process_solution () const
 {
-  // if the exact solution is not implemented/requested/availables, skip this
+  // if the exact solution is not implemented/requested/available, skip this
   if(!parameters->has_exact_solution)
    return;
    
@@ -1822,7 +1887,9 @@ template <int dim>
 void BurgersProblem<dim>::run ()
 {
 
-  //  initial uniform grid
+  // -------------------------------------------
+  // initial uniform grid
+  // -------------------------------------------
   const Point<dim> bottom_left = Point<dim>();
   Point<dim> upper_right;
   switch(dim){
@@ -1833,7 +1900,8 @@ void BurgersProblem<dim>::run ()
     }
   case 2:
     {
-      upper_right = Point<dim> (parameters->length,parameters->length);
+      // upper_right = Point<dim> (parameters->length,parameters->length);
+      upper_right = Point<dim> (parameters->length,1./double(parameters->n_init_refinements_x));
       break;
     }
   case 3:
@@ -1843,23 +1911,28 @@ void BurgersProblem<dim>::run ()
     }
   }
   bool colorize=true;
-  GridGenerator::hyper_rectangle(triangulation,bottom_left,upper_right,colorize);
-  triangulation.refine_global (parameters->n_init_refinements);
-  //  pcout << "bottom " << bottom_left[0] << " " << bottom_left[1]
-  //        << "top    " << upper_right[0] << " " << upper_right[1] << std::endl;
+  // GridGenerator::hyper_rectangle(triangulation,repetitions,bottom_left,upper_right,colorize);
+  // triangulation.refine_global (parameters->n_init_refinements);
+  static const unsigned int arr[] = {parameters->n_init_refinements_x,parameters->n_init_refinements_y};
+  const std::vector<unsigned int> repetitions(arr, arr+sizeof(arr)/sizeof(arr[0]) );
+  GridGenerator::subdivided_hyper_rectangle(triangulation,repetitions,bottom_left,upper_right,colorize);
+  if (console_print_out_ >= 10)
+    pcout << "bottom " << bottom_left[0] << " " << bottom_left[1]
+          << "top    " << upper_right[0] << " " << upper_right[1] << std::endl;
 
+  // -------------------------------------------
+  // system setup (DOFs, sparsity, etc.)
+  // -------------------------------------------
   setup_system ();
+  if (console_print_out_ >= 10)
+  {
+    pcout << "   Number of active cells:       " << triangulation.n_global_active_cells() << std::endl;
+    pcout << "   Number of degrees of freedom: " << dof_handler.n_dofs()                  << std::endl;
+  }
 
-  pcout << "   Number of active cells:       "
-        << triangulation.n_global_active_cells()
-        << std::endl;
-  pcout << "   Number of degrees of freedom: "
-        << dof_handler.n_dofs()
-        << std::endl;
-
-  // auxiliary vector in Newton solve
-  LA::MPI::Vector newton_update (locally_owned_dofs,locally_relevant_dofs,mpi_communicator);
-
+  // -------------------------------------------
+  // time step init
+  // -------------------------------------------
   // jcr &
   const double       &time_step    = parameters->time_step;
   const double       &initial_time = parameters->initial_time;
@@ -1872,25 +1945,24 @@ void BurgersProblem<dim>::run ()
   
   // synchronize time at which exact solution is evaluated
   ExactSolution<dim>::synchronize (&begin_time);
-  // EITHER initial guess for steady state solve (use the exact solution as initial guess)
-  // OR     simply starting point of the transient simulation
-  //      VectorTools::interpolate (dof_handler,
-  //                                parameters.initial_conditions, solution);
 
+  // -------------------------------------------
+  // distributed solution vectors
+  // -------------------------------------------
+  // use initial data as a starting point
   LA::MPI::Vector completely_dist_solution(locally_owned_dofs,mpi_communicator);
   VectorTools::interpolate(dof_handler,
                            InitialData<dim>(n_components,parameters->pbID), 
                            //ZeroFunction<dim>(n_components), 
                            completely_dist_solution);
-
-  current_solution = completely_dist_solution;
-
+                           
   // apply Dirichlet conditions at first iteration
   std::map<unsigned int, double> boundary_values; // jcr scope of bv?
   const unsigned short n_boundaries = parameters->n_boundaries;
   for (unsigned short bd_id = 0; bd_id < n_boundaries; ++bd_id) 
     for (unsigned int cmp_i = 0; cmp_i < n_components; ++cmp_i) 
-      if (parameters->boundary_conditions[bd_id].type_of_bc[cmp_i] == 1) {
+      if (parameters->boundary_conditions[bd_id].type_of_bc[cmp_i] == 1) 
+      {
         std::vector<bool> mask (n_components, false);
         mask[cmp_i] = true;
         VectorTools::interpolate_boundary_values (dof_handler,
@@ -1899,20 +1971,30 @@ void BurgersProblem<dim>::run ()
                                                   boundary_values,              
                                                   mask);
       } // end if Dirichlet
+  // insert BC values in solution vector
   for (std::map<unsigned int, double>::const_iterator it = boundary_values.begin(); it != boundary_values.end(); ++it)
     completely_dist_solution(it->first) = (it->second) ;
+  // synch the parallel vector
+  // jcr: should we do this at the end or each time we mess with the parallel vector?
   completely_dist_solution.compress(VectorOperation::insert);
+
+  // auxiliary vector in Newton solve
+  LA::MPI::Vector newton_update (locally_owned_dofs,locally_relevant_dofs,mpi_communicator);
 
   // ------                             ------- //
   // ------ prepare for transient solve ------- //
   // ------                             ------- //
-  pcout << "about to start transient ..." << std::endl;
+  if (console_print_out_ >= 1)
+    pcout << "about to start transient ..." << std::endl;
+  
+  // jcr is this a copy? Not sure, current solution also has relevant dofs ...
   current_solution = completely_dist_solution;
-  old_solution   = current_solution;
-  older_solution = current_solution;
+  old_solution     = completely_dist_solution;
+  older_solution   = completely_dist_solution;
+  
   //process_solution ();
   output_solution (0);
-  //  AssertThrow(false, ExcMessage(" stopping after initial"));
+  //  AssertThrow(false, ExcMessage(" stopping after initial output_solution"));
   output_exact_solution (0);
 
   assemble_mass_matrix ();
@@ -1928,7 +2010,8 @@ void BurgersProblem<dim>::run ()
   bool is_time_adaptive = parameters->is_cfl_time_adaptive;
   double delta_t = parameters->time_step;  // above, reference, here not, why?
   unsigned int n_time_steps=0;
-  if(!is_time_adaptive){
+  if(!is_time_adaptive)
+  {
     // we want to check time convergence and compare numerical solution
     // against exact solution at final_time not around it
     unsigned int n0, n1=0;
@@ -1940,7 +2023,8 @@ void BurgersProblem<dim>::run ()
       n1 = n0+1;
     else if( std::abs(initial_time + (n0-1) * delta_t -final_time) <dt_accuracy)
       n1 = n0-1;
-    else {
+    else 
+    {
       pcout << "initial_time=" << initial_time << "\tn_time_steps=" << n0
             << "\ttime_step="  << delta_t      << "\tfinal_time="   << final_time << "\n"
             << "initial_time + n_time_steps * time_step=" << initial_time + n0 * delta_t << std::endl; 
@@ -1950,75 +2034,97 @@ void BurgersProblem<dim>::run ()
     n_time_steps = n1;
   }
 
-
-  std::string str = "solu.txt"; std::ofstream o (str.c_str()); 
-  current_solution.print(o, 10,true,false);
-
-
+  if(dim==1 && console_print_out_ >= 5)
+  {
+    std::string str = "initial_solution.txt"; std::ofstream o (str.c_str()); 
+    current_solution.print(o, 10,true,false);
+  }
 
   // ------                  ------- //
   // ------  transient solve ------- //
   // ------                  ------- //
   while ( begin_time < final_time ) {
 
-    delta_t = compute_dt();
-    delta_t = parameters->time_step;
+    // ---------------------
     // compute a new delta t
+    // ---------------------
     if(is_time_adaptive)
-       delta_t = compute_dt();
+      delta_t = compute_dt();
+    else
+      delta_t = parameters->time_step;
 
-    // to be placed after dt modification
+    // adjust dt to yield the user-requested end time
     if( begin_time + delta_t >= final_time ) {
-       delta_t = final_time - begin_time;
-       begin_time += 1E-14; // to make sure this is the last time step
-       pcout << "Reducing time step size to " << delta_t << std::endl;
+      delta_t = final_time - begin_time;
+      begin_time += 1E-14; // to make sure this is the last time step
+      if(console_print_out_ >= 1)
+        pcout << "Reducing time step size from " << (final_time - begin_time) << " to " << delta_t 
+              << "\tbegin time=" << begin_time << "\tfinal_time=" << final_time << std::endl;
+    }
+    // increment time step counter
+    ++time_step_no;
+
+    if(console_print_out_ >= 1)
+    { 
+      pcout<<"\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n";
+      pcout<<"!!-- begin_time="<< begin_time << " dt= " << delta_t << " time step no=" << time_step_no << std::endl;
     }
     
-    ++time_step_no;
-    pcout<<"\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n";
-    pcout<<"!!-- begin_time="<<begin_time<<"  step="<<time_step_no<<std::endl;
-
-    // do we need the all setup call again? jcr
+    // do we need the all setup call again? jcr, only if refinement i believe
     //system_matrix.reinit (sparsity_pattern);  
 
+    // -----------------
+    // compute viscosity
+    // -----------------
     compute_viscosity( delta_t );
 
-    for (unsigned short stage_i = 0; stage_i < n_stages; ++stage_i) {
+    // ---------------------
+    // loop on the RK stages
+    // ---------------------
+    for (unsigned short stage_i = 0; stage_i < n_stages; ++stage_i) 
+    {
 
+      // compute c_i dt
       double stage_time = begin_time+c[stage_i]*delta_t;
-      pcout<<"!!-- solving stage "<<stage_i<<" at stage_time "<< stage_time <<"\n";
+      if(console_print_out_ >= 3)
+        pcout<<"!!-- solving stage "<< stage_i << " at stage_time " << stage_time << std::endl;
 
       // ------------              ------------ //
       // ------------ Newton solve ------------ //
       // ------------              ------------ //
+      unsigned int nonlin_iter = 0;
+      bool newton_convergence = false;
 
-      // this computes the TR residual G(Y_i) at stage i   
+      // compute the TR residual G(Y_i) at stage i   
       compute_tr_residual(stage_i , stage_time, delta_t );
       // compute the initial residual norm
       double res_norm = system_rhs.l2_norm();
       // compute the tolerance to satisfy based on ATOL and RTOL  
       const double tol = parameters->nonlinear_atol + parameters->nonlinear_rtol * res_norm;
-      pcout << "Initial residual norm = "<< res_norm <<"\t" << "Tolerance value adopted = " << tol << std::endl;
+      if(console_print_out_ >= 3)
+        pcout << "Initial residual norm = "   << res_norm << "\t" 
+              << "Tolerance value adopted = " << tol      << std::endl;
 
-      int nonlin_iter = 0;
-      bool  newton_convergence = false;
-
-      while ( nonlin_iter < parameters->max_nonlin_iterations && ! newton_convergence ) {
-        pcout <<  "Newton iteration # " << nonlin_iter << "\t:";
-        // this computes the residual and the jacobiam matrix J delta u = -F(u)    
-        //        std::cout << "before tr jac " << std::endl;
+      // Newton's WHILE loop
+      while ( nonlin_iter < parameters->max_nonlin_iterations && !newton_convergence ) 
+      {
+        if(console_print_out_ >= 3)
+          pcout <<  "Newton iteration # " << nonlin_iter << "\t:";
+        
+        // compute the residual and the jacobiam matrix J delta u = -F(u)    
         assemble_tr_jacobian (stage_i, stage_time, delta_t, is_explicit);
-        //        std::cout << "after tr jac " << std::endl;
         // compute initial residual
         double res_norm = res_norm;
+        
+        // what is below looks like BS. One can have newton_update be a locally-owned vector 
+        // only, pass it to the solver, and only do the vector trick below for the 
+        // current_solution update ... jcr
+        
         // zero out the update vector
-        //        std::cout << "before newton_update = 0.0; " << std::endl;
         newton_update.reinit(locally_owned_dofs,locally_relevant_dofs,mpi_communicator);
         // newton_update.reinit(locally_owned_dofs,mpi_communicator);
-        //        std::cout << "after newton_update = 0.0; " << std::endl;
-        // solve the linear system J delta = -f 
-        std::pair<unsigned int, double> convergence = linear_solve (newton_update);
-        //        std::cout << "after linear solve; " << std::endl;
+        // solve the linear system J delta = -f  and put the solution in newton_update
+        std::pair<unsigned int, double> linear_convergence = linear_solve (newton_update);
         // update Newton solution
         //current_solution.add(parameters->damping, newton_update);
         
@@ -2034,77 +2140,96 @@ void BurgersProblem<dim>::run ()
         tmp = current_solution;
         tm2 = newton_update;
         
-        o.close(); str = "update" + Utilities::int_to_string(nonlin_iter,4) + ".txt"; o.open(str.c_str()); 
-        newton_update.print(o, 10,true,false);
+        //o.close(); str = "update" + Utilities::int_to_string(nonlin_iter,4) + ".txt"; o.open(str.c_str()); 
+        //newton_update.print(o, 10,true,false);
 
         // add the newton update from the solve (newton_update only contains locally_owned dofs)
-	//        tmp.add(1.0, tm2);
-	tmp += tm2;
+	      // tmp.add(1.0, tm2);
+	      tmp += tm2;
         current_solution = tmp;
 
 
-        //        std::cout << "after damping " << std::endl;
-        if( (is_explicit) && (std::fabs(parameters->damping-1)<1e-12) ) {
+        if( (is_explicit) && (std::fabs(parameters->damping-1)<1e-12) ) 
+        { //jcr: need {} for one line if when there is an else????
           // no need for nonlinear iteration with explicit schemes
           newton_convergence=true;
+          // print out residual attained according to printout level requested
+          if(console_print_out_ >= 3)
+          {
+            compute_tr_residual(stage_i, stage_time, delta_t);
+            res_norm = system_rhs.l2_norm();
+            std::printf("   %-16.3e %04d        %-5.2e %-5.2e\n", res_norm, 
+                linear_convergence.first, linear_convergence.second, newton_update.l2_norm() );
+          }
         }
-        else{
-          // this computes the TR residual G(Y) at stage i   
+        else
+        {
+          // this computes the Transient residual G(Y_i) at stage i   
           compute_tr_residual(stage_i, stage_time, delta_t);
           // compute the initial residual norm
           res_norm = system_rhs.l2_norm();
-          //    output_viscosity();
-          std::printf("   %-16.3e %04d        %-5.2e %-5.2e\n", res_norm, convergence.first, convergence.second, newton_update.l2_norm() );
+          // 
+          // output_viscosity();
+          // console print for convergence status: 
+          //  Newton res, # of lin solve, lin solve residual, norm of Newton update vector
+          if(console_print_out_ >= 3)
+            std::printf("   %-16.3e %04d        %-5.2e %-5.2e\n", res_norm, 
+                linear_convergence.first, linear_convergence.second, newton_update.l2_norm() );
+          // check Newton convergence
           newton_convergence = res_norm < tol ;
-          if(newton_convergence)
+          if ( newton_convergence && console_print_out_ >= 1)
             pcout << "  --- Newton has converged --- " << std::endl;
         }
         // increment iteration counter
         ++nonlin_iter;
-      } // Newton's loop
+      } // END of Newton's WHILE loop
      
       //      AssertThrow (false, ExcMessage ("jcr stopping"));
       if( ! newton_convergence )
         AssertThrow (false, ExcMessage ("No convergence in Newton solver"));
-      // ------------ END END END  ------------ //
-      // ------------ END END END  ------------ //
+      
+      // ------------              ------------ //
       // ------------ Newton solve ------------ //
+      // ------------ END END END  ------------ //
   
-    } // end RK stages
+    // ---------------------
+    }  // END of  RK stages
+    // ---------------------
 
     // solve: M current_sol = M_old_sol + dt sum_{i} b_i previous_f_i
-    //    std::cout << "system_rhs = 0.0 " << std::endl;
     system_rhs = 0.0;
-    //    std::cout << "mass_matrix.vmult " << std::endl;
     LA::MPI::Vector tmp(locally_owned_dofs,mpi_communicator);
     tmp = old_solution;       
     mass_matrix.vmult(system_rhs,tmp);    
-    //    std::cout << "after mass.vmult" << std::endl;
     for (unsigned short stage_i = 0; stage_i < n_stages; ++stage_i) 
       system_rhs.add (delta_t * b[stage_i], previous_f[stage_i]);
       // system_rhs += (delta_t * b[stage_i]) * previous_f[stage_i];
     std::pair<unsigned int, double> mass_convergence = mass_solve (current_solution);
 
     // output solution
-    if (Utilities::MPI::n_mpi_processes(mpi_communicator) <= 32)
+    unsigned int multiple = time_step_no/vtk_output_frequency_;
+    if(multiple*vtk_output_frequency_-time_step_no ==0 )
     {
-       TimerOutput::Scope t(computing_timer, "output");
-       output_solution (time_step_no);
+      if(Utilities::MPI::n_mpi_processes(mpi_communicator) <= 32)
+      {
+        TimerOutput::Scope t(computing_timer, "output");
+        output_solution (time_step_no);
+      }
     }
-  
     // prepare next time step
     begin_time    += delta_t;
     older_solution = old_solution;
     old_solution   = current_solution;
 
-    pcout << "time_step_no=" << time_step_no << std::endl;
+  // ------                  ------- //
+  } // end of transient loop
+  // ------  transient solve ------- //
+  // ------  END  END  END   ------- //
 
-  }
+  if(console_print_out_ >= 1)
+    pcout<<"\nUSING TIME METHOD "<<parameters->time_discretization_scheme<<"\n";
 
-  pcout<<"\nUSING METHOD "<<parameters->time_discretization_scheme<<"\n";
-
-
-  pcout << std::endl;
+  // print out timer stats
   computing_timer.print_summary ();
   computing_timer.reset ();
 
@@ -2131,22 +2256,26 @@ int main (int argc, char* argv[])
     // Utilities::System::MPI_InitFinalize mpi_initialization (argc, argv);
     Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1);
 
-    const unsigned int dim = 2;
+    {
+      const unsigned int dim = 2;
 
-    ParameterHandler prm;
-    Parameters::AllParameters<dim>::declare_parameters (prm); // done this way b/c static (this is ugly)
+      ParameterHandler prm;
+      Parameters::AllParameters<dim>::declare_parameters (prm); // done this way b/c static (this is ugly)
 
-    char *input_filename = argv[1];
-    prm.print_parameters (std::cout, ParameterHandler::Text);
+      char *input_filename = argv[1];
+      // prm.print_parameters (std::cout, ParameterHandler::Text);
+      prm.read_input (input_filename);
 
-    prm.read_input (input_filename);
+      Parameters::AllParameters<dim> parameters;
+      parameters.parse_parameters (prm);  // done this way b/c not static
 
-    Parameters::AllParameters<dim> parameters;
-    parameters.parse_parameters (prm);  // done this way b/c not static
+//    AssertThrow(false, ExcMessage(" stopping after parameters"));
 
-    const MyFlux<dim> flux;
-    BurgersProblem<dim> burgers_problem(&parameters, flux);
-    burgers_problem.run();
+      const MyFlux<dim> flux;
+      BurgersProblem<dim> burgers_problem(&parameters, flux);
+      burgers_problem.run();
+    }
+    
   }
 
   catch (std::exception &exc)

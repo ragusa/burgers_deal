@@ -6,7 +6,7 @@
 subsection time stepping
   set time step 	 =  0.0001 # simulation time step
   set initial time	 =  0.0  # simulation start time
-  set final time	 =  0.0001 # 0.250  # simulation end time
+  set final time	 =  0.250  # simulation end time
   set theta scheme value =  0.5
   set time discretization scheme  =  9
   set perform steady state first = true #
@@ -36,7 +36,16 @@ end
 # --------------------------------------------------
 # Refinement
 subsection refinement
-  set number initial mesh refinements = 4
+  set number initial mesh refinements = 7
+  set number initial mesh refinements_x = 256
+  set number initial mesh refinements_y = 1
+end
+
+# --------------------------------------------------
+# Verbose level
+subsection verbose level
+  set console print out level = 1
+  set vtk output frequency = 1 
 end
 
 # --------------------------------------------------
@@ -51,10 +60,10 @@ subsection entropy
   set c_max = 0.5
   set c_ent = 1.0
   set c_jmp = 4.0
-  set cfl   = 0.5
-  set viscosity option	= 1
+  set viscosity option	= 2
   set constant viscosity = 0.02
   set is cfl time adaptive =  false #
+  set cfl   = 0.05
 end
 
 # --------------------------------------------------

@@ -41,7 +41,7 @@ namespace Parameters
         
       double nonlinear_atol;
       double nonlinear_rtol;
-      int max_nonlin_iterations;
+      unsigned int max_nonlin_iterations;
       double damping;
 
       static void declare_parameters (ParameterHandler &prm); // jcr why is one static?
@@ -98,7 +98,7 @@ namespace Parameters
           prm.declare_entry("max linear iters", "300",
                             Patterns::Integer(),
                             "Maximum linear solver iterations");
-          prm.declare_entry("ilut fill", "2",
+          prm.declare_entry("ilut fill", "2.0",
                             Patterns::Double(),
                             "Ilut preconditioner fill");
           prm.declare_entry("ilut absolute tolerance", "1e-9",
@@ -182,6 +182,11 @@ namespace Parameters
       unsigned short time_discretization_scheme;
 
       unsigned int n_init_refinements;
+      unsigned int n_init_refinements_x;
+      unsigned int n_init_refinements_y;
+      
+      unsigned int console_print_out;
+      unsigned int vtk_output_frequency;
 
       unsigned int degree_p;
       unsigned int n_quad_points;
@@ -257,6 +262,23 @@ namespace Parameters
           prm.declare_entry("number initial mesh refinements", "2",
                             Patterns::Integer(0),
                             "number initial mesh refinements");
+          prm.declare_entry("number initial mesh refinements_x", "10",
+                            Patterns::Integer(0),
+                            "number initial mesh refinements_x");
+          prm.declare_entry("number initial mesh refinements_y", "1",
+                            Patterns::Integer(0),
+                            "number initial mesh refinements_y");
+        }
+      prm.leave_subsection();
+
+      prm.enter_subsection("verbose level");
+        {
+          prm.declare_entry("console print out level", "0",
+                            Patterns::Integer(0),
+                            "console print out level");
+          prm.declare_entry("vtk output frequency", "1",
+                            Patterns::Integer(0),
+                            "vtk output frequency");
         }
       prm.leave_subsection();
 
@@ -376,7 +398,16 @@ namespace Parameters
         
       prm.enter_subsection("refinement");
         {
-          n_init_refinements = prm.get_integer("number initial mesh refinements");
+          n_init_refinements   = prm.get_integer("number initial mesh refinements");
+          n_init_refinements_x = prm.get_integer("number initial mesh refinements_x");
+          n_init_refinements_y = prm.get_integer("number initial mesh refinements_y");
+        }
+      prm.leave_subsection();
+
+      prm.enter_subsection("verbose level");
+        {
+          console_print_out = prm.get_integer("console print out level");
+          vtk_output_frequency = prm.get_integer("vtk output frequency");
         }
       prm.leave_subsection();
 

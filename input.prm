@@ -1,6 +1,6 @@
 # Listing of Parameters
 # ---------------------
-
+#
 # --------------------------------------------------
 # Time stepping control
 subsection time stepping
@@ -19,7 +19,7 @@ subsection nonlinear solver
   set nonlinear method             = newton
   set nonlinear absolute tolerance = 1e-10
   set nonlinear relative tolerance = 1e-12
-  set max nonlinear iters          = 100
+  set max nonlinear iters          = 10
 end
 
 subsection linear solver
