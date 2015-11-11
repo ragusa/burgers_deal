@@ -282,6 +282,8 @@ BurgersProblem<dim>::BurgersProblem (const Parameters::AllParameters<dim> *const
                        n_stages, a, b, c, is_explicit);
   
   /** print chosen Butcher tableau to the screen */
+  pcout << "time discretization method name is : " << method_name << std::endl;
+
   for (unsigned short s = 0; s < n_stages; ++s) 
   {
     pcout << "c[" << s << "]=" << c[s] << "  ";
@@ -293,7 +295,7 @@ BurgersProblem<dim>::BurgersProblem (const Parameters::AllParameters<dim> *const
     pcout << "b[" << s << "]=" << b[s] <<"    ";
   pcout << "\n";
   
-  AssertThrow(false, ExcMessage(" stopping after constructor"));
+  //AssertThrow(false, ExcMessage(" stopping after constructor"));
 }
 
 // **********************************************************************************
