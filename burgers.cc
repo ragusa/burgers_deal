@@ -189,6 +189,8 @@ private:
 
   const unsigned int                         console_print_out_;
   const unsigned int                         vtk_output_frequency_;
+  std::string out_dir;
+  std::string out_name;
   
   ConstraintMatrix                           constraints;
 
@@ -274,7 +276,9 @@ BurgersProblem<dim>::BurgersProblem (const Parameters::AllParameters<dim> *const
                    TimerOutput::summary,
                    TimerOutput::wall_times),
  console_print_out_(parameters->console_print_out),
- vtk_output_frequency_(parameters->vtk_output_frequency)
+ vtk_output_frequency_(parameters->vtk_output_frequency),
+ out_dir(parameters->output_dir),
+ out_name(parameters->output_name)
 {
   //pcout.set_condition (parameters->output == Parameters::Solver::verbose);
   
@@ -1673,27 +1677,28 @@ void BurgersProblem<dim>::output_solution (const unsigned int time_step_no) cons
 
   // ----------------------
   // output solution to vtu
-  const  std::string filename = "solution-" +  
+  const  std::string filename = parameters->output_dir + parameters->output_name +  
                                 Utilities::int_to_string(triangulation.locally_owned_subdomain(), 4) + 
                                 "." +
                                 Utilities::int_to_string (time_step_no, 4) ;
   std::ofstream output ((filename + ".vtu").c_str());  // write vtu file
   data_out.write_vtu (output);
+
+  // ----------------------
   // create master record
   if (Utilities::MPI::this_mpi_process(mpi_communicator) == 0)
   {
     std::vector<std::string> filenames;
     for (unsigned int i=0; i<Utilities::MPI::n_mpi_processes(mpi_communicator); ++i)
-        filenames.push_back ("solution-" +
+        filenames.push_back (parameters->output_dir + parameters->output_name +
                              Utilities::int_to_string (i, 4) +
                              "." +
                              Utilities::int_to_string (time_step_no, 4) +
                              ".vtu");
     std::ofstream master_output ((filename + ".pvtu").c_str());
     data_out.write_pvtu_record (master_output, filenames);
-//    data_out.write_visit_record (master_output, filenames);
+    // data_out.write_visit_record (master_output, filenames);
   }
-  // ----------------------
 
 }
 
@@ -2148,8 +2153,8 @@ void BurgersProblem<dim>::run ()
         //newton_update.print(o, 10,true,false);
 
         // add the newton update from the solve (newton_update only contains locally_owned dofs)
-	      // tmp.add(1.0, tm2);
-	      tmp += tm2;
+        // tmp.add(1.0, tm2);
+        tmp += tm2;
         current_solution = tmp;
 
 

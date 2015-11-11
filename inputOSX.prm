@@ -8,7 +8,7 @@ subsection time stepping
   set initial time	 =  0.0  # simulation start time
   set final time	 =  0.250  # simulation end time
   set theta scheme value =  0.5
-  set time discretization name    =  ERK44
+  set time discretization name    =  ERK22
   set perform steady state first = true #
 end
 

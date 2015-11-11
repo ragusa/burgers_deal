@@ -188,6 +188,8 @@ namespace Parameters
       
       unsigned int console_print_out;
       unsigned int vtk_output_frequency;
+      std::string  output_dir;
+      std::string  output_name;
 
       unsigned int degree_p;
       unsigned int n_quad_points;
@@ -283,6 +285,12 @@ namespace Parameters
           prm.declare_entry("vtk output frequency", "1",
                             Patterns::Integer(0),
                             "vtk output frequency");
+          prm.declare_entry("output directory", "./",
+                            Patterns::Anything(),
+                            "output directory");
+          prm.declare_entry("output name", "solu-",
+                            Patterns::Anything(),
+                            "output name");
         }
       prm.leave_subsection();
 
@@ -413,6 +421,8 @@ namespace Parameters
         {
           console_print_out = prm.get_integer("console print out level");
           vtk_output_frequency = prm.get_integer("vtk output frequency");
+          output_dir  = prm.get("output directory");
+          output_name = prm.get("output name");
         }
       prm.leave_subsection();
 
