@@ -1,0 +1,5 @@
+cmake -DCMAKE_INSTALL_PREFIX=/Users/jean/dealii/installed -DDEAL_II_WITH_MPI=ON -DDEAL_II_WITH_P4EST=ON -DP4EST_DIR=/Users/jean/dealii/p4est_from_web/install/FAST/ -DPETSC_DIR=/opt/moose/petsc/mpich_petsc-3.6.0/clang-opt-superlu/ -DPETSC_ARCH=MacOSX -DDEAL_II_WITH_PETSC=ON ..
+
+
+another useful line (alternative to dos2unix on mac):
+cat foo | col -b > foo2

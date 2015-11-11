@@ -42,3 +42,8 @@ Makefile
 
 # temporary files
 *~
+
+# allow the following files
+!useful.txt
+
+
