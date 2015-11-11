@@ -236,6 +236,7 @@ private:
   Vector<double> visc_output_K; // viscosity for output via DataOut
 
   // time integration, Butcher tableau
+  std::string                        method_name; 
   unsigned short                     n_stages;
   std::vector<std::vector<double> >  a;
   std::vector<double>                b, c; 
@@ -277,7 +278,8 @@ BurgersProblem<dim>::BurgersProblem (const Parameters::AllParameters<dim> *const
 {
   //pcout.set_condition (parameters->output == Parameters::Solver::verbose);
   
-  init_butcher_tableau(temporal_disc(parameters->time_discretization_scheme), n_stages, a, b, c, is_explicit);
+  init_butcher_tableau(method_name=parameters->time_discretization_scheme_name,
+                       n_stages, a, b, c, is_explicit);
   
   /** print chosen Butcher tableau to the screen */
   for (unsigned short s = 0; s < n_stages; ++s) 
@@ -291,7 +293,7 @@ BurgersProblem<dim>::BurgersProblem (const Parameters::AllParameters<dim> *const
     pcout << "b[" << s << "]=" << b[s] <<"    ";
   pcout << "\n";
   
-  // AssertThrow(false, ExcMessage(" stopping after constructor"));
+  AssertThrow(false, ExcMessage(" stopping after constructor"));
 }
 
 // **********************************************************************************
@@ -2227,7 +2229,7 @@ void BurgersProblem<dim>::run ()
   // ------  END  END  END   ------- //
 
   if(console_print_out_ >= 1)
-    pcout<<"\nUSING TIME METHOD "<<parameters->time_discretization_scheme<<"\n";
+    pcout<<"\nUSING TIME METHOD "<<method_name<<"\n";
 
   // print out timer stats
   computing_timer.print_summary ();
@@ -2269,7 +2271,7 @@ int main (int argc, char* argv[])
       Parameters::AllParameters<dim> parameters;
       parameters.parse_parameters (prm);  // done this way b/c not static
 
-//    AssertThrow(false, ExcMessage(" stopping after parameters"));
+    // AssertThrow(false, ExcMessage(" stopping after parameters"));
 
       const MyFlux<dim> flux;
       BurgersProblem<dim> burgers_problem(&parameters, flux);

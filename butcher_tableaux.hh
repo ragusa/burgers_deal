@@ -6,14 +6,53 @@
 // **********************************************************************************
 // jcr global var ?
 
-enum temporal_disc {BE, IM, SDIRK22, SDIRK32, SDIRK33, FE, CN, RK2, RK4, RK3};
+enum temporal_disc {BE, IM, SDIRK22, SDIRK32, SDIRK33, FE, CN, ERK22, ERK44, ERK33, not_implemented};
 
-void init_butcher_tableau(const temporal_disc                method,
+void init_butcher_tableau(const std::string                 &method_name,
                           unsigned short                    &n_stages,
                           std::vector<std::vector<double> > &a,
                           std::vector<double>               &b,
                           std::vector<double>               &c,
                           bool                              &is_explicit) {
+                          
+  std::cout << "time discretization method name is : " << method_name << std::endl;
+
+  temporal_disc method;
+  std::string erk22("ERK22");
+  std::string erk33("ERK33");
+  std::string erk44("ERK44");
+  std::string cn   ("CN");
+  std::string fe   ("Explicit-Euler");
+  std::string be   ("Implicit-Euler");
+  std::string im   ("Implicit-Midpoint");
+  std::string sdirk22("SDIRK22");
+  std::string sdirk32("SDIRK32");
+  std::string sdirk33("SDIRK33");
+  
+  method = not_implemented;
+  if (erk22.compare(method_name) == 0)
+    method = ERK22;
+  if (erk33.compare(method_name) == 0)
+    method = ERK33;
+  if (erk44.compare(method_name) == 0)
+    method = ERK44;
+  if (fe.compare(method_name) == 0)
+    method = FE;
+  if (be.compare(method_name) == 0)
+    method = BE;
+  if (im.compare(method_name) == 0)
+    method = IM;
+  if (cn.compare(method_name) == 0)
+    method = CN;
+  if (sdirk22.compare(method_name) == 0)
+    method = SDIRK22;
+  if (sdirk32.compare(method_name) == 0)
+    method = SDIRK32;
+  if (sdirk33.compare(method_name) == 0)
+    method = SDIRK33;
+  
+  std::cout << "time discretization method ENUM is : " << method << std::endl;
+
   if (method == BE) { // verified
     n_stages = 1;
     a = std::vector<std::vector<double> > (n_stages, std::vector<double> (n_stages, 0.0));
@@ -94,7 +133,7 @@ void init_butcher_tableau(const temporal_disc                method,
     c = std::vector<double> (n_stages, 0.0);
     c[0] = 0.0;
     c[1] = 1.0;
-  } else if (method == RK2) {
+  } else if (method == ERK22) {
     n_stages = 2;
     a = std::vector<std::vector<double> > (n_stages, std::vector<double> (n_stages, 0.0));
     a[0][0] = 0.0;
@@ -106,7 +145,7 @@ void init_butcher_tableau(const temporal_disc                method,
     c = std::vector<double> (n_stages, 0.0);
     c[0] = 0.0;
     c[1] = 0.5;
-  } else if (method == RK4) {
+  } else if (method == ERK44) {
     n_stages = 4;
     a = std::vector<std::vector<double> > (n_stages, std::vector<double> (n_stages, 0.0));
     a[0][0] = 0.0;
@@ -129,7 +168,7 @@ void init_butcher_tableau(const temporal_disc                method,
     c[1] = 0.5;
     c[2] = 0.5;
     c[3] = 1.0;
-  } else if (method == RK3) {
+  } else if (method == ERK33) {
     n_stages = 3;
     a = std::vector<std::vector<double> > (n_stages, std::vector<double> (n_stages, 0.0));
     a[0][0] = 0.0;
@@ -146,6 +185,8 @@ void init_butcher_tableau(const temporal_disc                method,
     c[0] = 0.0;
     c[1] = 1.0;
     c[2] = 0.5;
+  } else if (method == not_implemented) {
+    AssertThrow(false, ExcNotImplemented());
   } else {
     AssertThrow(false, ExcNotImplemented());
   }
@@ -153,8 +194,9 @@ void init_butcher_tableau(const temporal_disc                method,
   // determine whether the method is fully explicit or not
   is_explicit=true;
   for(int i=0; i<n_stages; ++i)
-    if( std::abs(a[i][i]) > 1e-6 )
-      is_explicit = false;
+    for(int j=i; j<n_stages; ++j)
+      if( std::abs(a[i][j]) > 1e-6 )
+        is_explicit = false;
        
 }
 

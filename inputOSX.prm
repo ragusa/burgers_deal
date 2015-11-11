@@ -8,7 +8,7 @@ subsection time stepping
   set initial time	 =  0.0  # simulation start time
   set final time	 =  0.250  # simulation end time
   set theta scheme value =  0.5
-  set time discretization scheme  =  9
+  set time discretization name    =  ERK33
   set perform steady state first = true #
 end
 
@@ -80,7 +80,7 @@ end
 # --------------------------------------------------
 # FE Space
 subsection fe space
-  set polynomials of degree p	    = 1
+  set polynomials of degree p	      = 1
   set number quadrature points	    = 3
   set number face quadrature points = 2
 end

@@ -179,7 +179,8 @@ namespace Parameters
       double theta;
       bool perform_steady_state_first;
       bool is_transient;
-      unsigned short time_discretization_scheme;
+//      unsigned short time_discretization_scheme;
+      std::string    time_discretization_scheme_name;
 
       unsigned int n_init_refinements;
       unsigned int n_init_refinements_x;
@@ -251,9 +252,12 @@ namespace Parameters
                             "value for theta that interpolated between explicit "
                             "Euler (theta=0), Crank-Nicolson (theta=0.5), and "
                             "implicit Euler (theta=1).");
-          prm.declare_entry("time discretization scheme", "5",
-                            Patterns::Integer(0),
-                            "time disc.: 5=FE");
+ //         prm.declare_entry("time discretization scheme", "5",
+ //                           Patterns::Integer(0),
+ //                           "time disc.: 5=FE");
+          prm.declare_entry("time discretization name", "ERK33",
+                            Patterns::Anything(),
+                            "time disc. name");
         }
       prm.leave_subsection();
 
@@ -391,7 +395,8 @@ namespace Parameters
               initial_time = prm.get_double("initial time");
               final_time   = prm.get_double("final time");
               theta        = prm.get_double("theta scheme value");
-              time_discretization_scheme = prm.get_integer("time discretization scheme");
+              //time_discretization_scheme = prm.get_integer("time discretization scheme");
+              time_discretization_scheme_name = prm.get("time discretization name");
             }
         }
       prm.leave_subsection();
