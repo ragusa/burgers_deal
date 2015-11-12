@@ -237,6 +237,8 @@ private:
 
   Vector<double> visc_output_K; // viscosity for output via DataOut
 
+  double       present_time;
+
   // time integration, Butcher tableau
   std::string                        method_name; 
   unsigned short                     n_stages;
@@ -1677,7 +1679,7 @@ void BurgersProblem<dim>::output_solution (const unsigned int time_step_no) cons
 
   // ----------------------
   // output solution to vtu
-  const  std::string filename = parameters->output_dir + parameters->output_name +  
+  const std::string filename = parameters->output_dir + "/" + parameters->output_name +  
                                 Utilities::int_to_string(triangulation.locally_owned_subdomain(), 4) + 
                                 "." +
                                 Utilities::int_to_string (time_step_no, 4) ;
@@ -1686,20 +1688,38 @@ void BurgersProblem<dim>::output_solution (const unsigned int time_step_no) cons
 
   // ----------------------
   // create master record
-  if (Utilities::MPI::this_mpi_process(mpi_communicator) == 0)
+  if (   (Utilities::MPI::this_mpi_process(mpi_communicator) == 0) 
+      && (Utilities::MPI::n_mpi_processes(mpi_communicator)  >  1) )
   {
     std::vector<std::string> filenames;
     for (unsigned int i=0; i<Utilities::MPI::n_mpi_processes(mpi_communicator); ++i)
-        filenames.push_back (parameters->output_dir + parameters->output_name +
+        filenames.push_back (parameters->output_dir + "/" + parameters->output_name +
                              Utilities::int_to_string (i, 4) +
                              "." +
                              Utilities::int_to_string (time_step_no, 4) +
                              ".vtu");
-    std::ofstream master_output ((filename + ".pvtu").c_str());
-    data_out.write_pvtu_record (master_output, filenames);
-    // data_out.write_visit_record (master_output, filenames);
+    std::string pvtu_master_filename = filename + ".pvtu";
+    std::ofstream pvtu_master (pvtu_master_filename.c_str());
+    data_out.write_pvtu_record (pvtu_master, filenames);
+    // data_out.write_visit_record (pvtu_master_filename, filenames);
   }
 
+  // ----------------------
+  // create pvd record for times
+  if (Utilities::MPI::this_mpi_process(mpi_communicator) == 0) 
+  {
+    std::string filename_vtu_pvtu = filename + ".vtu";
+    if ( Utilities::MPI::n_mpi_processes(mpi_communicator)  > 1 )
+      filename_vtu_pvtu = filename + ".pvtu";
+    
+    static std::vector<std::pair<double,std::string> > times_and_names;
+    times_and_names.push_back (std::pair<double,std::string> (present_time, filename_vtu_pvtu));
+    std::string time_filename = parameters->output_dir + parameters->output_name + ".pvd";
+    std::ofstream pvd_output (time_filename.c_str());
+    data_out.write_pvd_record (pvd_output, times_and_names);
+
+  }
+  
 }
 
 // **********************************************************************************
@@ -1901,19 +1921,20 @@ void BurgersProblem<dim>::run ()
   // -------------------------------------------
   const Point<dim> bottom_left = Point<dim>();
   Point<dim> upper_right;
-  switch(dim){
-  case 1:
+  switch(dim)
+  {
+    case 1:
     {
       upper_right = Point<dim> (parameters->length);
       break;
     }
-  case 2:
+    case 2:
     {
       // upper_right = Point<dim> (parameters->length,parameters->length);
       upper_right = Point<dim> (parameters->length,1./double(parameters->n_init_refinements_x));
       break;
     }
-  case 3:
+    case 3:
     {
       upper_right = Point<dim> (parameters->length,parameters->length,parameters->length);
       break;
@@ -1952,6 +1973,9 @@ void BurgersProblem<dim>::run ()
   // time stepping
   double begin_time = initial_time;
   
+  // are we at the last time step ?
+  bool is_last_time_step = false;
+
   // synchronize time at which exact solution is evaluated
   ExactSolution<dim>::synchronize (&begin_time);
 
@@ -1970,7 +1994,7 @@ void BurgersProblem<dim>::run ()
   const unsigned short n_boundaries = parameters->n_boundaries;
   for (unsigned short bd_id = 0; bd_id < n_boundaries; ++bd_id) 
     for (unsigned int cmp_i = 0; cmp_i < n_components; ++cmp_i) 
-      if (parameters->boundary_conditions[bd_id].type_of_bc[cmp_i] == 1) 
+      if ( parameters->boundary_conditions[bd_id].type_of_bc[cmp_i] == 1 ) 
       {
         std::vector<bool> mask (n_components, false);
         mask[cmp_i] = true;
@@ -2002,13 +2026,15 @@ void BurgersProblem<dim>::run ()
   older_solution   = completely_dist_solution;
   
   //process_solution ();
+  present_time = initial_time;
   output_solution (0);
   //  AssertThrow(false, ExcMessage(" stopping after initial output_solution"));
   output_exact_solution (0);
 
   assemble_mass_matrix ();
   // for fully explicit techniques, the jacobian matrix will be constant = Mass
-  if(is_explicit) {
+  if (is_explicit) 
+  {
     system_matrix = 0.;
     system_matrix.add(mass_matrix , 1.0);
     //system_matrix.add(1, mass_matrix);
@@ -2019,18 +2045,18 @@ void BurgersProblem<dim>::run ()
   bool is_time_adaptive = parameters->is_cfl_time_adaptive;
   double delta_t = parameters->time_step;  // above, reference, here not, why?
   unsigned int n_time_steps=0;
-  if(!is_time_adaptive)
+  if ( !is_time_adaptive )
   {
     // we want to check time convergence and compare numerical solution
     // against exact solution at final_time not around it
     unsigned int n0, n1=0;
     const double dt_accuracy = 1e-14;
     n0 = (final_time - initial_time) / delta_t;
-    if( std::abs(initial_time + n0 * delta_t -final_time) <dt_accuracy)
+    if ( std::abs(initial_time + n0 * delta_t -final_time) <dt_accuracy)
       n1 = n0;
-    else if( std::abs(initial_time + (n0+1) * delta_t -final_time) <dt_accuracy)
+    else if ( std::abs(initial_time + (n0+1) * delta_t -final_time) <dt_accuracy)
       n1 = n0+1;
-    else if( std::abs(initial_time + (n0-1) * delta_t -final_time) <dt_accuracy)
+    else if ( std::abs(initial_time + (n0-1) * delta_t -final_time) <dt_accuracy)
       n1 = n0-1;
     else 
     {
@@ -2043,7 +2069,7 @@ void BurgersProblem<dim>::run ()
     n_time_steps = n1;
   }
 
-  if(dim==1 && console_print_out_ >= 5)
+  if ( dim==1 && console_print_out_ >= 5 )
   {
     std::string str = "initial_solution.txt"; std::ofstream o (str.c_str()); 
     current_solution.print(o, 10,true,false);
@@ -2052,19 +2078,21 @@ void BurgersProblem<dim>::run ()
   // ------                  ------- //
   // ------  transient solve ------- //
   // ------                  ------- //
-  while ( begin_time < final_time ) {
+  while ( begin_time < final_time ) 
+  {
 
     // ---------------------
     // compute a new delta t
     // ---------------------
-    if(is_time_adaptive)
+    if (is_time_adaptive)
       delta_t = compute_dt();
     else
       delta_t = parameters->time_step;
 
     // adjust dt to yield the user-requested end time
-    if( begin_time + delta_t >= final_time ) {
+    if ( begin_time + delta_t >= final_time ) {
       delta_t = final_time - begin_time;
+      is_last_time_step = true;
       begin_time += 1E-14; // to make sure this is the last time step
       if(console_print_out_ >= 1)
         pcout << "Reducing time step size from " << (final_time - begin_time) << " to " << delta_t 
@@ -2072,8 +2100,8 @@ void BurgersProblem<dim>::run ()
     }
     // increment time step counter
     ++time_step_no;
-
-    if(console_print_out_ >= 1)
+    
+    if (console_print_out_ >= 1)
     { 
       pcout<<"\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n";
       pcout<<"!!-- begin_time="<< begin_time << " dt= " << delta_t << " time step no=" << time_step_no << std::endl;
@@ -2095,7 +2123,7 @@ void BurgersProblem<dim>::run ()
 
       // compute c_i dt
       double stage_time = begin_time+c[stage_i]*delta_t;
-      if(console_print_out_ >= 3)
+      if (console_print_out_ >= 3)
         pcout<<"!!-- solving stage "<< stage_i << " at stage_time " << stage_time << std::endl;
 
       // ------------              ------------ //
@@ -2110,14 +2138,14 @@ void BurgersProblem<dim>::run ()
       double res_norm = system_rhs.l2_norm();
       // compute the tolerance to satisfy based on ATOL and RTOL  
       const double tol = parameters->nonlinear_atol + parameters->nonlinear_rtol * res_norm;
-      if(console_print_out_ >= 3)
+      if (console_print_out_ >= 3)
         pcout << "Initial residual norm = "   << res_norm << "\t" 
               << "Tolerance value adopted = " << tol      << std::endl;
 
       // Newton's WHILE loop
       while ( nonlin_iter < parameters->max_nonlin_iterations && !newton_convergence ) 
       {
-        if(console_print_out_ >= 3)
+        if (console_print_out_ >= 3)
           pcout <<  "Newton iteration # " << nonlin_iter << "\t:";
         
         // compute the residual and the jacobiam matrix J delta u = -F(u)    
@@ -2158,7 +2186,7 @@ void BurgersProblem<dim>::run ()
         current_solution = tmp;
 
 
-        if( (is_explicit) && (std::fabs(parameters->damping-1)<1e-12) ) 
+        if ( (is_explicit) && (std::fabs(parameters->damping-1)<1e-12) ) 
         { //jcr: need {} for one line if when there is an else????
           // no need for nonlinear iteration with explicit schemes
           newton_convergence=true;
@@ -2194,7 +2222,7 @@ void BurgersProblem<dim>::run ()
       } // END of Newton's WHILE loop
      
       //      AssertThrow (false, ExcMessage ("jcr stopping"));
-      if( ! newton_convergence )
+      if ( ! newton_convergence )
         AssertThrow (false, ExcMessage ("No convergence in Newton solver"));
       
       // ------------              ------------ //
@@ -2205,6 +2233,7 @@ void BurgersProblem<dim>::run ()
     }  // END of  RK stages
     // ---------------------
 
+    // ---------------------
     // solve: M current_sol = M_old_sol + dt sum_{i} b_i previous_f_i
     system_rhs = 0.0;
     LA::MPI::Vector tmp(locally_owned_dofs,mpi_communicator);
@@ -2214,21 +2243,28 @@ void BurgersProblem<dim>::run ()
       system_rhs.add (delta_t * b[stage_i], previous_f[stage_i]);
       // system_rhs += (delta_t * b[stage_i]) * previous_f[stage_i];
     std::pair<unsigned int, double> mass_convergence = mass_solve (current_solution);
+    // ---------------------
 
+    // ---------------------
     // output solution
     unsigned int multiple = time_step_no/vtk_output_frequency_;
-    if(multiple*vtk_output_frequency_-time_step_no ==0 )
+    if ( multiple*vtk_output_frequency_-time_step_no ==0 || is_last_time_step )
     {
-      if(Utilities::MPI::n_mpi_processes(mpi_communicator) <= 32)
+      if ( Utilities::MPI::n_mpi_processes(mpi_communicator) <= 32 )
       {
         TimerOutput::Scope t(computing_timer, "output");
+        present_time = begin_time + delta_t;
         output_solution (time_step_no);
       }
     }
+    // ---------------------
+
+    // ---------------------
     // prepare next time step
     begin_time    += delta_t;
     older_solution = old_solution;
     old_solution   = current_solution;
+    // ---------------------
 
   // ------                  ------- //
   } // end of transient loop
@@ -2238,9 +2274,11 @@ void BurgersProblem<dim>::run ()
   if(console_print_out_ >= 1)
     pcout<<"\nUSING TIME METHOD "<<method_name<<"\n";
 
+  // ---------------------
   // print out timer stats
   computing_timer.print_summary ();
   computing_timer.reset ();
+  // ---------------------
 
 }
 

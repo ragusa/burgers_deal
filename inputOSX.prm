@@ -8,7 +8,7 @@ subsection time stepping
   set initial time	 =  0.0  # simulation start time
   set final time	 =  0.250  # simulation end time
   set theta scheme value =  0.5
-  set time discretization name    =  ERK22
+  set time discretization name    =  Explicit-Euler
   set perform steady state first = true #
 end
 
@@ -45,7 +45,9 @@ end
 # Verbose level
 subsection verbose level
   set console print out level = 1
-  set vtk output frequency = 1 
+  set vtk output frequency = 100
+  set output directory = outp
+  set output name = s
 end
 
 # --------------------------------------------------

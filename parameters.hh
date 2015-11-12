@@ -285,7 +285,7 @@ namespace Parameters
           prm.declare_entry("vtk output frequency", "1",
                             Patterns::Integer(0),
                             "vtk output frequency");
-          prm.declare_entry("output directory", "./",
+          prm.declare_entry("output directory", ".",
                             Patterns::Anything(),
                             "output directory");
           prm.declare_entry("output name", "solu-",
