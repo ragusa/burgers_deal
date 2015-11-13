@@ -3,3 +3,7 @@ cmake -DCMAKE_INSTALL_PREFIX=/Users/jean/dealii/installed -DDEAL_II_WITH_MPI=ON 
 
 another useful line (alternative to dos2unix on mac):
 cat foo | col -b > foo2
+
+
+if MPI issue, add 127.0.0.1 your machine name in /etc/hosts
+
