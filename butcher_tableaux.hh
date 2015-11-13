@@ -61,7 +61,7 @@ void init_butcher_tableau(const std::string                 &method_name,
     b[0] = 1.0;
     c = std::vector<double> (n_stages, 0.0);
     c[0] = 1.0;
-  } else if (method == IM) {
+  } else if (method == IM) { // NOT verified
     n_stages = 1;
     a = std::vector<std::vector<double> > (n_stages, std::vector<double> (n_stages, 0.0));
     a[0][0] = 0.5;
@@ -133,7 +133,7 @@ void init_butcher_tableau(const std::string                 &method_name,
     c = std::vector<double> (n_stages, 0.0);
     c[0] = 0.0;
     c[1] = 1.0;
-  } else if (method == ERK22) {
+  } else if (method == ERK22) { // verified
     n_stages = 2;
     a = std::vector<std::vector<double> > (n_stages, std::vector<double> (n_stages, 0.0));
     a[0][0] = 0.0;
@@ -145,7 +145,7 @@ void init_butcher_tableau(const std::string                 &method_name,
     c = std::vector<double> (n_stages, 0.0);
     c[0] = 0.0;
     c[1] = 0.5;
-  } else if (method == ERK44) {
+  } else if (method == ERK44) { // verified
     n_stages = 4;
     a = std::vector<std::vector<double> > (n_stages, std::vector<double> (n_stages, 0.0));
     a[0][0] = 0.0;
