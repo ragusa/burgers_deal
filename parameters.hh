@@ -18,13 +18,15 @@ namespace Parameters
 // --- enums // Neumann=0, Dirichlet=1, None=2
 // ----------------------------------
   enum BCType { Neumann, Dirichlet, None };
+  
+  enum ViscosityType { constant_viscosity, first_order_viscosity, entropy_viscosity} ;
 
   struct Solver
     {
       enum NonLinSolverType { newton };
       NonLinSolverType NLsolver;
 
-      enum LinSolverType { gmres, direct };
+      enum LinSolverType { krylov, direct };
       LinSolverType solver;
         
       enum  OutputType { quiet, verbose };
@@ -85,10 +87,10 @@ namespace Parameters
                             Patterns::Selection("quiet|verbose"),
                             "State whether output from linear solver runs should be printed. "
                             "Choices are <quiet|verbose>.");
-          prm.declare_entry("linear method", "gmres",
-                            Patterns::Selection("gmres|direct"),
+          prm.declare_entry("linear method", "krylov",
+                            Patterns::Selection("krylov|direct"),
                             "The kind of linear solver for the linear system. "
-                            "Choices are <gmres|direct>.");
+                            "Choices are <krylov|direct>.");
           prm.declare_entry("linear absolute tolerance", "1e-10",
                             Patterns::Double(),
                             "Linear absolute tolerance");
@@ -143,7 +145,7 @@ namespace Parameters
             
           const std::string sv = prm.get("linear method");
           if (sv == "direct")     solver = direct;
-          else if (sv == "gmres") solver = gmres;
+          else if (sv == "krylov") solver = krylov;
             
           linear_atol     = prm.get_double("linear absolute tolerance");
           linear_rtol     = prm.get_double("linear relative tolerance");
@@ -167,6 +169,8 @@ namespace Parameters
       
       static const unsigned n_boundaries = 6;
       
+      // enum ViscosityType { constant_viscosity, first_order_viscosity, entropy_viscosity} ;
+      
       struct BoundaryConditions
         {
           BCType type_of_bc[MyComponents::n_components];
@@ -179,7 +183,6 @@ namespace Parameters
       double theta;
       bool perform_steady_state_first;
       bool is_transient;
-//      unsigned short time_discretization_scheme;
       std::string    time_discretization_scheme_name;
 
       unsigned int n_init_refinements;
@@ -204,16 +207,12 @@ namespace Parameters
       bool has_exact_solution;
       int  pbID;
 
-      int conductivity_option;
-      double cond_k0;
-      double cond_k1;
-      double cond_k2;
 
       double c_max;
       double c_ent;
       double c_jmp;
       double cfl;
-      int viscosity_option;
+      ViscosityType viscosity_option;
       double const_visc;
       bool is_cfl_time_adaptive;
 
@@ -254,9 +253,6 @@ namespace Parameters
                             "value for theta that interpolated between explicit "
                             "Euler (theta=0), Crank-Nicolson (theta=0.5), and "
                             "implicit Euler (theta=1).");
- //         prm.declare_entry("time discretization scheme", "5",
- //                           Patterns::Integer(0),
- //                           "time disc.: 5=FE");
           prm.declare_entry("time discretization name", "ERK33",
                             Patterns::Anything(),
                             "time disc. name");
@@ -330,9 +326,9 @@ namespace Parameters
           prm.declare_entry("cfl", "0.5",
                             Patterns::Double(0),
                             "cfl value");
-          prm.declare_entry("viscosity option", "0",
-                            Patterns::Integer(0),
-                            "viscosity option: 0=constant, 1=first_order, 2=entropy");
+          prm.declare_entry("viscosity option", "first_order",
+                            Patterns::Selection("constant|first_order|entropy"),
+                            "viscosity option: constant, first_order, entropy");
           prm.declare_entry("constant viscosity", "1.0",
                             Patterns::Double(0),
                             "constant viscosity, for testing purposes");
@@ -446,7 +442,18 @@ namespace Parameters
           c_ent = prm.get_double("c_ent");
           c_jmp = prm.get_double("c_jmp");
           cfl   = prm.get_double("cfl");
-          viscosity_option = prm.get_integer("viscosity option");
+          const std::string vo = prm.get("viscosity option");
+          if (vo == "constant")  
+            viscosity_option = constant_viscosity;
+          else if (vo == "first_order") 
+            viscosity_option = first_order_viscosity;
+          else  if (vo == "entropy") 
+            viscosity_option = entropy_viscosity;
+          else
+            AssertThrow (false, ExcNotImplemented());
+            
+
+
           const_visc = prm.get_double("constant viscosity");
           is_cfl_time_adaptive = prm.get_bool("is cfl time adaptive");
                   }

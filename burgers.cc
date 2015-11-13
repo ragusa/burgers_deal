@@ -811,8 +811,10 @@ void BurgersProblem<dim>::compute_viscosity(const double dt)
        
   typename DoFHandler<dim>::active_cell_iterator  cell = dof_handler.begin_active(),
                                                   endc = dof_handler.end();
-  switch(parameters->viscosity_option){
-  case constant_viscosity:
+
+  switch(parameters->viscosity_option)
+  {
+  case Parameters::constant_viscosity:
     {
     for (; cell!=endc; ++cell)
       if (cell->is_locally_owned())
@@ -825,7 +827,7 @@ void BurgersProblem<dim>::compute_viscosity(const double dt)
       } // end locally_owned if statement
     break;
     }
-  case first_order_viscosity:
+  case Parameters::first_order_viscosity:
     {
     compute_first_order_viscosity();
     for (; cell!=endc; ++cell)
@@ -840,7 +842,7 @@ void BurgersProblem<dim>::compute_viscosity(const double dt)
       } // end locally_owned if statement
     break;
     }
-  case entropy_viscosity:
+  case Parameters::entropy_viscosity:
     {
     compute_entropy_residual(dt);
     compute_jumps();
@@ -1358,6 +1360,12 @@ void BurgersProblem<dim>::assemble_tr_jacobian (const unsigned short stage_i    
   {
     system_matrix.add( mass_matrix , 1.0 );
     //system_matrix.add( 1.0 , mass_matrix);
+
+    //pcout << "noted an ESDIRK stage " << std::endl;
+    //std::string str = "matrix.txt"; std::ofstream o (str.c_str()); 
+    //system_matrix.print(o, true);
+    //AssertThrow(false, ExcMessage(" stopping after assemble_tr_jacobian 2"));
+    
     return;
   }
 
@@ -1543,19 +1551,28 @@ std::pair<unsigned int, double> BurgersProblem<dim>::linear_solve (LA::MPI::Vect
 { 
   switch (parameters->solver)
   {
-    case Parameters::Solver::direct:
+    case Parameters::Solver::krylov:
     {
       // compute linear tolerance based on atol and rtol values
       const double linear_tol = parameters->linear_rtol*system_rhs.l2_norm() + parameters->linear_atol ;
 
       SolverControl  solver_control (system_rhs.size(), linear_tol );
-      LA::SolverCG  solver (solver_control);
+      LA::SolverGMRES  solver (solver_control);
       // jcr : is it ok for performance to create this solution vector here each time?
       LA::MPI::Vector completely_dist_solution(locally_owned_dofs,mpi_communicator);
       
 //      LA::MPI::PreconditionSSOR preconditioner;
-      dealii::PETScWrappers::PreconditionNone preconditioner ;
-      preconditioner.initialize(system_matrix);
+//      dealii::PETScWrappers::PreconditionNone preconditioner ;
+//      preconditioner.initialize(system_matrix);
+
+      LA::MPI::PreconditionAMG preconditioner;
+      LA::MPI::PreconditionAMG::AdditionalData data;
+#ifdef USE_PETSC_LA
+      data.symmetric_operator = false;
+#else
+      / * Trilinos defaults are good * /
+#endif
+      preconditioner.initialize(system_matrix, data);
 
       // solver only accepts locally owned dofs, thus use completely_dist_solution as container for the solve result
       solver.solve (system_matrix, completely_dist_solution, system_rhs, preconditioner );
@@ -1588,7 +1605,7 @@ std::pair<unsigned int, double> BurgersProblem<dim>::mass_solve (LA::MPI::Vector
 { 
   switch (parameters->solver)
   {
-    case Parameters::Solver::direct:
+    case Parameters::Solver::krylov:
     {
       // compute linear tolerance based on atol and rtol values
       const double linear_tol = parameters->linear_rtol*system_rhs.l2_norm() + parameters->linear_atol ;
@@ -1600,8 +1617,17 @@ std::pair<unsigned int, double> BurgersProblem<dim>::mass_solve (LA::MPI::Vector
       //PreconditionSSOR<> preconditioner;
       // const double omega = parameters->ssor_omega;
 //      LA::MPI::PreconditionSSOR preconditioner;
-      dealii::PETScWrappers::PreconditionNone preconditioner ;
-      preconditioner.initialize(mass_matrix);
+//      dealii::PETScWrappers::PreconditionNone preconditioner ;
+//      preconditioner.initialize(mass_matrix);
+
+      LA::MPI::PreconditionAMG preconditioner;
+      LA::MPI::PreconditionAMG::AdditionalData data;
+#ifdef USE_PETSC_LA
+      data.symmetric_operator = true;
+#else
+      / * Trilinos defaults are good * /
+#endif
+      preconditioner.initialize(system_matrix, data);
   
       // solver only accepts locally owned dofs, thus use completely_dist_solution as container for the solve result
       solver.solve (mass_matrix, completely_dist_solution, system_rhs, preconditioner );    
@@ -1681,8 +1707,7 @@ void BurgersProblem<dim>::output_solution (const unsigned int time_step_no) cons
   // output solution to vtu
   const std::string filename = parameters->output_dir + "/" + parameters->output_name +  
                                 Utilities::int_to_string(triangulation.locally_owned_subdomain(), 4) + 
-                                "." +
-                                Utilities::int_to_string (time_step_no, 4) ;
+                                "." + Utilities::int_to_string (time_step_no, 4) ;
   std::ofstream output ((filename + ".vtu").c_str());  // write vtu file
   data_out.write_vtu (output);
 
@@ -1693,11 +1718,9 @@ void BurgersProblem<dim>::output_solution (const unsigned int time_step_no) cons
   {
     std::vector<std::string> filenames;
     for (unsigned int i=0; i<Utilities::MPI::n_mpi_processes(mpi_communicator); ++i)
-        filenames.push_back (parameters->output_dir + "/" + parameters->output_name +
+        filenames.push_back (parameters->output_name +
                              Utilities::int_to_string (i, 4) +
-                             "." +
-                             Utilities::int_to_string (time_step_no, 4) +
-                             ".vtu");
+                             "." + Utilities::int_to_string (time_step_no, 4) + ".vtu");
     std::string pvtu_master_filename = filename + ".pvtu";
     std::ofstream pvtu_master (pvtu_master_filename.c_str());
     data_out.write_pvtu_record (pvtu_master, filenames);
@@ -1714,7 +1737,7 @@ void BurgersProblem<dim>::output_solution (const unsigned int time_step_no) cons
     
     static std::vector<std::pair<double,std::string> > times_and_names;
     times_and_names.push_back (std::pair<double,std::string> (present_time, filename_vtu_pvtu));
-    std::string time_filename = parameters->output_dir + parameters->output_name + ".pvd";
+    std::string time_filename = parameters->output_dir + "/" + parameters->output_name + ".pvd";
     std::ofstream pvd_output (time_filename.c_str());
     data_out.write_pvd_record (pvd_output, times_and_names);
 
@@ -1930,8 +1953,8 @@ void BurgersProblem<dim>::run ()
     }
     case 2:
     {
-      // upper_right = Point<dim> (parameters->length,parameters->length);
-      upper_right = Point<dim> (parameters->length,1./double(parameters->n_init_refinements_x));
+      upper_right = Point<dim> (parameters->length,parameters->length);
+      // upper_right = Point<dim> (parameters->length,1./double(parameters->n_init_refinements_x));
       break;
     }
     case 3:
@@ -2013,6 +2036,9 @@ void BurgersProblem<dim>::run ()
 
   // auxiliary vector in Newton solve
   LA::MPI::Vector newton_update (locally_owned_dofs,locally_relevant_dofs,mpi_communicator);
+  // create tmp vectors with only locally_owned dofs
+  LA::MPI::Vector tmp_solu(locally_owned_dofs,mpi_communicator);
+  LA::MPI::Vector tmp_update(locally_owned_dofs,mpi_communicator);
 
   // ------                             ------- //
   // ------ prepare for transient solve ------- //
@@ -2130,7 +2156,6 @@ void BurgersProblem<dim>::run ()
       // ------------ Newton solve ------------ //
       // ------------              ------------ //
       unsigned int nonlin_iter = 0;
-      bool newton_convergence = false;
 
       // compute the TR residual G(Y_i) at stage i   
       compute_tr_residual(stage_i , stage_time, delta_t );
@@ -2138,56 +2163,46 @@ void BurgersProblem<dim>::run ()
       double res_norm = system_rhs.l2_norm();
       // compute the tolerance to satisfy based on ATOL and RTOL  
       const double tol = parameters->nonlinear_atol + parameters->nonlinear_rtol * res_norm;
+      // set convergence boolean (for ESDIRK, res_norm should be zero)
+      bool newton_convergence = false;
+      newton_convergence = res_norm < tol ; 
+      //
       if (console_print_out_ >= 3)
-        pcout << "Initial residual norm = "   << res_norm << "\t" 
-              << "Tolerance value adopted = " << tol      << std::endl;
+        pcout << "Initial NL residual norm = " << res_norm << "\t" 
+              << "Tolerance value adopted  = " << tol      << std::endl;
 
       // Newton's WHILE loop
       while ( nonlin_iter < parameters->max_nonlin_iterations && !newton_convergence ) 
       {
         if (console_print_out_ >= 3)
-          pcout <<  "Newton iteration # " << nonlin_iter << "\t:";
+          pcout <<  "Newton iteration # " << nonlin_iter+1 << " :\t";
         
         // compute the residual and the jacobiam matrix J delta u = -F(u)    
         assemble_tr_jacobian (stage_i, stage_time, delta_t, is_explicit);
-        // compute initial residual
-        double res_norm = res_norm;
+        //std::string str = "rhs.txt"; std::ofstream o (str.c_str()); 
+        //system_rhs.print(o, 10,true,false);
         
-        // what is below looks like BS. One can have newton_update be a locally-owned vector 
-        // only, pass it to the solver, and only do the vector trick below for the 
-        // current_solution update ... jcr
-        
-        // zero out the update vector
+        // zero out the update vector and the tmp vectors
         newton_update.reinit(locally_owned_dofs,locally_relevant_dofs,mpi_communicator);
-        // newton_update.reinit(locally_owned_dofs,mpi_communicator);
+        tmp_solu.reinit(locally_owned_dofs,mpi_communicator);
+        tmp_update.reinit(locally_owned_dofs,mpi_communicator);
+        
         // solve the linear system J delta = -f  and put the solution in newton_update
         std::pair<unsigned int, double> linear_convergence = linear_solve (newton_update);
-        // update Newton solution
-        //current_solution.add(parameters->damping, newton_update);
         
-        // create a tmp vector with only locally_owned dofs
-        LA::MPI::Vector tmp(locally_owned_dofs,mpi_communicator);
-        LA::MPI::Vector tm2(locally_owned_dofs,mpi_communicator);
-        // copy the locally owned dofs in it
-        /*        std::cout << " size " << current_solution.size() 
-                  << " size " << tmp.size() 
-                  << " size " << newton_update.size() 
-                  << " size " << tm2.size() 
-                  << std::endl;*/
-        tmp = current_solution;
-        tm2 = newton_update;
-        
-        //o.close(); str = "update" + Utilities::int_to_string(nonlin_iter,4) + ".txt"; o.open(str.c_str()); 
-        //newton_update.print(o, 10,true,false);
-
-        // add the newton update from the solve (newton_update only contains locally_owned dofs)
-        // tmp.add(1.0, tm2);
-        tmp += tm2;
-        current_solution = tmp;
+        // update Newton solution: steps 1-3      
+        // 1) copy the locally owned dofs in them
+        tmp_solu   = current_solution;
+        tmp_update = newton_update;        
+        // 2) add the newton update from the solve 
+        //tmp_solu.add(parameters->damping, tmp_update);
+        tmp_solu += tmp_update;
+        // 3) put back in the vector with local relevant dofs
+        current_solution = tmp_solu;
 
 
         if ( (is_explicit) && (std::fabs(parameters->damping-1)<1e-12) ) 
-        { //jcr: need {} for one line if when there is an else????
+        {  
           // no need for nonlinear iteration with explicit schemes
           newton_convergence=true;
           // print out residual attained according to printout level requested
@@ -2195,23 +2210,26 @@ void BurgersProblem<dim>::run ()
           {
             compute_tr_residual(stage_i, stage_time, delta_t);
             res_norm = system_rhs.l2_norm();
-            std::printf("   %-16.3e %04d        %-5.2e %-5.2e\n", res_norm, 
-                linear_convergence.first, linear_convergence.second, newton_update.l2_norm() );
+            pcout <<  res_norm << "\t" << linear_convergence.first 
+                               << "\t" << linear_convergence.second 
+                               << "\t" << newton_update.l2_norm() 
+                               << std::endl;
           }
         }
         else
         {
           // this computes the Transient residual G(Y_i) at stage i   
           compute_tr_residual(stage_i, stage_time, delta_t);
-          // compute the initial residual norm
           res_norm = system_rhs.l2_norm();
           // 
           // output_viscosity();
           // console print for convergence status: 
-          //  Newton res, # of lin solve, lin solve residual, norm of Newton update vector
+          // Newton res, # of lin solve, lin solve residual, norm of Newton update vector
           if(console_print_out_ >= 3)
-            std::printf("   %-16.3e %04d        %-5.2e %-5.2e\n", res_norm, 
-                linear_convergence.first, linear_convergence.second, newton_update.l2_norm() );
+            pcout <<  res_norm << "\t" << linear_convergence.first 
+                               << "\t" << linear_convergence.second 
+                               << "\t" << newton_update.l2_norm() 
+                               << std::endl;
           // check Newton convergence
           newton_convergence = res_norm < tol ;
           if ( newton_convergence && console_print_out_ >= 1)
@@ -2221,14 +2239,14 @@ void BurgersProblem<dim>::run ()
         ++nonlin_iter;
       } // END of Newton's WHILE loop
      
-      //      AssertThrow (false, ExcMessage ("jcr stopping"));
-      if ( ! newton_convergence )
-        AssertThrow (false, ExcMessage ("No convergence in Newton solver"));
-      
       // ------------              ------------ //
       // ------------ Newton solve ------------ //
       // ------------ END END END  ------------ //
   
+      //      AssertThrow (false, ExcMessage ("jcr stopping"));
+      if ( ! newton_convergence )
+        AssertThrow (false, ExcMessage ("No convergence in Newton solver"));
+      
     // ---------------------
     }  // END of  RK stages
     // ---------------------
@@ -2236,9 +2254,8 @@ void BurgersProblem<dim>::run ()
     // ---------------------
     // solve: M current_sol = M_old_sol + dt sum_{i} b_i previous_f_i
     system_rhs = 0.0;
-    LA::MPI::Vector tmp(locally_owned_dofs,mpi_communicator);
-    tmp = old_solution;       
-    mass_matrix.vmult(system_rhs,tmp);    
+    tmp_solu = old_solution;       
+    mass_matrix.vmult(system_rhs,tmp_solu);    
     for (unsigned short stage_i = 0; stage_i < n_stages; ++stage_i) 
       system_rhs.add (delta_t * b[stage_i], previous_f[stage_i]);
       // system_rhs += (delta_t * b[stage_i]) * previous_f[stage_i];
