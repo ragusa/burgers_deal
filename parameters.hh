@@ -23,29 +23,34 @@ namespace Parameters
 
   struct Solver
     {
+      enum  OutputType { quiet, verbose };
+
+      // nonlinear
       enum NonLinSolverType { newton };
       NonLinSolverType NLsolver;
 
+      OutputType NLoutput;
+      
+      double nonlinear_atol;
+      double nonlinear_rtol;
+      double damping;
+      unsigned int max_nonlin_iterations;
+
+      //linear
       enum LinSolverType { krylov, direct };
       LinSolverType solver;
-        
-      enum  OutputType { quiet, verbose };
-      OutputType NLoutput;
+
       OutputType output;
         
       double linear_atol;
       double linear_rtol;
-      int max_linear_iterations;
       double ilut_fill;
       double ilut_atol;
       double ilut_rtol;
       double ilut_drop;
+      int max_linear_iterations;
         
-      double nonlinear_atol;
-      double nonlinear_rtol;
-      unsigned int max_nonlin_iterations;
-      double damping;
-
+      // methods
       static void declare_parameters (ParameterHandler &prm); // jcr why is one static?
       void parse_parameters (ParameterHandler &prm);
     };
@@ -72,12 +77,12 @@ namespace Parameters
           prm.declare_entry("nonlinear relative tolerance", "1e-10",
                             Patterns::Double(),
                             "Nonlinear relative tolerance");
-          prm.declare_entry("max nonlinear iters", "300",
-                            Patterns::Integer(),
-                            "Maximum nonlinear iterations");
           prm.declare_entry("damping", "1.0",
                             Patterns::Double(),
                             "damping");
+          prm.declare_entry("max nonlinear iters", "300",
+                            Patterns::Integer(),
+                            "Maximum nonlinear iterations");
         }
       prm.leave_subsection();
 
@@ -132,8 +137,8 @@ namespace Parameters
             
           nonlinear_atol         = prm.get_double("nonlinear absolute tolerance");
           nonlinear_rtol         = prm.get_double("nonlinear relative tolerance");
-          max_nonlin_iterations  = prm.get_integer("max nonlinear iters");
           damping                = prm.get_double("damping");
+          max_nonlin_iterations  = prm.get_integer("max nonlinear iters");
         }
       prm.leave_subsection();
 
@@ -234,6 +239,7 @@ namespace Parameters
   template <int dim>
   void AllParameters<dim>::declare_parameters (ParameterHandler &prm)
     {
+      // ------------------------------------
       prm.enter_subsection("time stepping");
         {
           prm.declare_entry("time step", "0.2",
@@ -256,9 +262,16 @@ namespace Parameters
           prm.declare_entry("time discretization name", "ERK33",
                             Patterns::Anything(),
                             "time disc. name");
+          prm.declare_entry("cfl", "0.5",
+                            Patterns::Double(0),
+                            "cfl value");
+          prm.declare_entry("is cfl time adaptive", "true",
+                            Patterns::Bool(),
+                            "is cfl time adaptive");                            
         }
       prm.leave_subsection();
 
+      // ------------------------------------
       prm.enter_subsection("refinement");
         {
           prm.declare_entry("number initial mesh refinements", "2",
@@ -273,6 +286,7 @@ namespace Parameters
         }
       prm.leave_subsection();
 
+      // ------------------------------------
       prm.enter_subsection("verbose level");
         {
           prm.declare_entry("console print out level", "0",
@@ -290,7 +304,8 @@ namespace Parameters
         }
       prm.leave_subsection();
 
-      prm.enter_subsection("fe space");
+     // ------------------------------------
+     prm.enter_subsection("fe space");
         {
           prm.declare_entry("polynomials of degree p", "2",
                             Patterns::Integer(0),
@@ -304,6 +319,7 @@ namespace Parameters
         }
       prm.leave_subsection();
         
+      // ------------------------------------
       prm.enter_subsection("domain");
         {
           prm.declare_entry("length", "1.0",
@@ -312,6 +328,7 @@ namespace Parameters
         }
       prm.leave_subsection();
         
+      // ------------------------------------
       prm.enter_subsection("entropy");
         {
           prm.declare_entry("c_max", "0.5",
@@ -323,21 +340,16 @@ namespace Parameters
           prm.declare_entry("c_jmp", "1.0",
                             Patterns::Double(0),
                             "c_jmp constant for the entropy jump term");
-          prm.declare_entry("cfl", "0.5",
-                            Patterns::Double(0),
-                            "cfl value");
           prm.declare_entry("viscosity option", "first_order",
                             Patterns::Selection("constant|first_order|entropy"),
                             "viscosity option: constant, first_order, entropy");
           prm.declare_entry("constant viscosity", "1.0",
                             Patterns::Double(0),
                             "constant viscosity, for testing purposes");
-          prm.declare_entry("is cfl time adaptive", "true",
-                            Patterns::Bool(),
-                            "is cfl time adaptive");                            
         }
       prm.leave_subsection();
         
+      // ------------------------------------
       prm.enter_subsection("exact solution");
         {
           prm.declare_entry("has exact solution", "true",
@@ -362,6 +374,7 @@ namespace Parameters
       prm.leave_subsection();
 
       
+      // ------------------------------------
       for (unsigned int boundary_id = 0; boundary_id < n_boundaries; ++boundary_id)
         {
           prm.enter_subsection("boundary_" + Utilities::int_to_string(boundary_id));
@@ -373,6 +386,7 @@ namespace Parameters
           prm.leave_subsection();
         }
       
+      // ------------------------------------
       Parameters::Solver::declare_parameters (prm);
     }
     
@@ -382,6 +396,7 @@ namespace Parameters
   template <int dim>
   void AllParameters<dim>::parse_parameters (ParameterHandler &prm)
     {
+      // ------------------------------------
       prm.enter_subsection("time stepping");
         {
           time_step = prm.get_double("time step");
@@ -392,6 +407,8 @@ namespace Parameters
               initial_time = 0.0;
               final_time   = 0.0;
               is_transient = false;
+              cfl          = 0.1;
+              is_cfl_time_adaptive = false;
             }
           else
             {
@@ -399,12 +416,14 @@ namespace Parameters
               initial_time = prm.get_double("initial time");
               final_time   = prm.get_double("final time");
               theta        = prm.get_double("theta scheme value");
-              //time_discretization_scheme = prm.get_integer("time discretization scheme");
               time_discretization_scheme_name = prm.get("time discretization name");
+              cfl   = prm.get_double("cfl");
+              is_cfl_time_adaptive = prm.get_bool("is cfl time adaptive");
             }
         }
       prm.leave_subsection();
         
+      // ------------------------------------
       prm.enter_subsection("refinement");
         {
           n_init_refinements   = prm.get_integer("number initial mesh refinements");
@@ -413,6 +432,7 @@ namespace Parameters
         }
       prm.leave_subsection();
 
+      // ------------------------------------
       prm.enter_subsection("verbose level");
         {
           console_print_out = prm.get_integer("console print out level");
@@ -422,6 +442,7 @@ namespace Parameters
         }
       prm.leave_subsection();
 
+      // ------------------------------------
       prm.enter_subsection("fe space");
         {
           degree_p           = prm.get_integer("polynomials of degree p");
@@ -430,18 +451,20 @@ namespace Parameters
         }
       prm.leave_subsection();
 
+      // ------------------------------------
       prm.enter_subsection("domain");
         {
           length = prm.get_double("length");
         }
       prm.leave_subsection();
 
+      // ------------------------------------
       prm.enter_subsection("entropy");
         {
           c_max = prm.get_double("c_max");
           c_ent = prm.get_double("c_ent");
           c_jmp = prm.get_double("c_jmp");
-          cfl   = prm.get_double("cfl");
+
           const std::string vo = prm.get("viscosity option");
           if (vo == "constant")  
             viscosity_option = constant_viscosity;
@@ -451,14 +474,12 @@ namespace Parameters
             viscosity_option = entropy_viscosity;
           else
             AssertThrow (false, ExcNotImplemented());
-            
-
-
+      
           const_visc = prm.get_double("constant viscosity");
-          is_cfl_time_adaptive = prm.get_bool("is cfl time adaptive");
                   }
       prm.leave_subsection();
 
+      // ------------------------------------
       prm.enter_subsection("exact solution");
         {
           has_exact_solution       = prm.get_bool("has exact solution");
@@ -493,6 +514,7 @@ namespace Parameters
           prm.leave_subsection();
         } // end loop on boundaries
       
+      // ------------------------------------
       Parameters::Solver::parse_parameters (prm);
     }
   
