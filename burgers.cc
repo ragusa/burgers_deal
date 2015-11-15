@@ -1,6 +1,6 @@
 /* Burgers equation stabilized with entropy viscosity and solved on distributed meshes (p4est)
  code written  using deal.ii 
-   JCR, Texas A&M University, 2012-14 
+   JCR, Texas A&M University, 2012-15 
    BT , Texas A&M University, 2013-14 
 */
 
@@ -82,8 +82,6 @@ namespace LA
 #include <cmath>
 #include <cstdlib>
 
-/** trilinos */
-
 using namespace dealii;
 
 /** perso **/
@@ -104,6 +102,8 @@ void mypause(std::string mystring, bool B)
   }
 }
 static int time_step_no=0;
+
+// #define USE_MAPS
 
 // **********************************************************************************
 // ---                   ---
@@ -222,8 +222,10 @@ private:
   double      c_ent;
   double      c_jmp;
 
+
+#ifdef USE_MAPS
   std::map<typename DoFHandler<dim>::active_cell_iterator, double>  map_h_local; // local h value
-  
+
   std::map<typename DoFHandler<dim>::active_cell_iterator, double>  map_entropy_residual_K; 
   std::map<typename DoFHandler<dim>::active_cell_iterator, double>  map_entropy_viscosity_K; 
   std::map<typename DoFHandler<dim>::active_cell_iterator, double>  map_first_order_viscosity_K; 
@@ -234,6 +236,20 @@ private:
   std::map<typename DoFHandler<dim>::active_cell_iterator, Vector<double> > map_entropy_viscosity_K_q; 
   std::map<typename DoFHandler<dim>::active_cell_iterator, Vector<double> > map_first_order_viscosity_K_q; 
   std::map<typename DoFHandler<dim>::active_cell_iterator, Vector<double> > map_viscosity_K_q; 
+#else
+  Vector<double>                 h_local_K;      // local h value
+
+  Vector<double>                 entropy_residual_K;      // max entropy residual on each cell
+  Vector<double>                 entropy_viscosity_K;     // max entropy viscosity on each cell
+  Vector<double>                 first_order_viscosity_K; // max first-order viscosity on each cell
+  Vector<double>                 viscosity_K;             // max viscosity on each cell
+  Vector<double>                 jumps_K;                 // max jump on each cell
+  
+  std::vector<Vector<double> >   entropy_residual_K_q;      // entropy residual on each cell, at each quadrature point
+  std::vector<Vector<double> >   entropy_viscosity_K_q;     // entropy viscosity on each cell, at each quadrature point
+  std::vector<Vector<double> >   first_order_viscosity_K_q; // first-order viscosity on each cell, at each quadrature point
+  std::vector<Vector<double> >   viscosity_K_q;             // viscosity on each cell, at each quadrature point
+#endif
 
   Vector<double> visc_output_K; // viscosity for output via DataOut
 
@@ -331,10 +347,10 @@ void BurgersProblem<dim>::setup_system ()
   if (first_time_here)
   {
     first_time_here = false;
-        
-    //const unsigned int n_act_cells = triangulation.n_locally_owned_active_cells();
-    
+
+#ifdef USE_MAPS
     // clear all maps
+    map_h_local.clear();
     map_entropy_residual_K.clear(); 
     map_entropy_viscosity_K.clear(); 
     map_first_order_viscosity_K.clear(); 
@@ -344,6 +360,27 @@ void BurgersProblem<dim>::setup_system ()
     map_entropy_viscosity_K_q.clear(); 
     map_first_order_viscosity_K_q.clear(); 
     map_viscosity_K_q.clear(); 
+#else
+    const unsigned int n_act_cells = triangulation.n_locally_owned_active_cells();
+    h_local_K.reinit              (n_act_cells);
+    entropy_residual_K.reinit     (n_act_cells);
+    entropy_viscosity_K.reinit    (n_act_cells);
+    first_order_viscosity_K.reinit(n_act_cells);
+    viscosity_K.reinit            (n_act_cells);
+    jumps_K.reinit                (n_act_cells);
+
+    entropy_residual_K_q      = std::vector<Vector<double> > ( n_act_cells, Vector<double> () );
+    entropy_viscosity_K_q     = std::vector<Vector<double> > ( n_act_cells, Vector<double> () );
+    first_order_viscosity_K_q = std::vector<Vector<double> > ( n_act_cells, Vector<double> () );
+    viscosity_K_q             = std::vector<Vector<double> > ( n_act_cells, Vector<double> () );
+    for (unsigned int icell=0; icell<n_act_cells ; ++icell)
+    {
+      entropy_residual_K_q[icell].reinit     (n_q_pts);
+      entropy_viscosity_K_q[icell].reinit    (n_q_pts);
+      first_order_viscosity_K_q[icell].reinit(n_q_pts);
+      viscosity_K_q[icell].reinit            (n_q_pts);
+    }
+#endif
     
     // dof handler
     dof_handler.clear();
@@ -388,18 +425,30 @@ void BurgersProblem<dim>::setup_system ()
     // ------------------------------
     double h_min_local = 1.E100;
     double volume_of_domain_local = 0.0;
-    map_h_local.clear();
+
+#ifdef USE_MAPS
+#else
+  Assert( h_local_K.size() == n_act_cells, ExcDimensionMismatch (h_local_K.size(), n_act_cells) );
+  unsigned int ii=0;
+#endif
+
     for (; cell!=endc; ++cell)
       if (cell->is_locally_owned())
       {
         h_min_local = std::min( h_min_local , cell->diameter() );
         volume_of_domain_local += cell->measure();
+#ifdef USE_MAPS
         map_h_local[cell] = cell->diameter();
         // alt.: map_h_local[cell] = std::pow( cell->measure(), 1./dim ) ;
-      }
-    // get values from all partitions
+#else
+        h_local_K(ii) = cell->diameter();
+        ++ii;
+#endif
+      } // end of locally owned
+    
+    // get h_min values from all partitions
     MPI_Allreduce(&h_min_local, &h_min, 1, MPI_DOUBLE, MPI_MIN, mpi_communicator);
-    // make sure volume_of_domain has been reset to 0.
+    // sum subdomain volumes from all partitions to get volume_of_domain
     volume_of_domain = 0.0;
     MPI_Allreduce(&volume_of_domain_local, &volume_of_domain, 1, MPI_DOUBLE, MPI_SUM, mpi_communicator);
     
@@ -509,6 +558,16 @@ void BurgersProblem<dim>::compute_entropy_residual(const double dt)
   // reset the average entropy value
   double entropy_average_local = 0.;
   
+#ifdef USE_MAPS
+#else
+  const unsigned int n_act_cells = triangulation.n_locally_owned_active_cells();
+  Assert( entropy_residual_K.size()   == n_act_cells, ExcDimensionMismatch (entropy_residual_K.size(), n_act_cells) );
+  Assert( entropy_residual_K_q.size() == n_act_cells, ExcDimensionMismatch (entropy_residual_K_q.size(), n_act_cells) );
+  Assert( entropy_residual_K_q[0].size() == n_q_pts, ExcDimensionMismatch (entropy_residual_K_q[0].size(), n_q_pts) );
+
+  unsigned int ii=0;
+#endif
+
   // loop on the active cells
   for (; cell!=endc; ++cell) 
     if (cell->is_locally_owned()) 
@@ -548,11 +607,11 @@ void BurgersProblem<dim>::compute_entropy_residual(const double dt)
       } // end quadrature pts loop
 
       // save the local residual at each qp
+#ifdef USE_MAPS
       // using maps (converting std::vector to Vector)
       map_entropy_residual_K_q[cell] = Vector<double>(ent_residual_local.begin(),ent_residual_local.end());      
       // obtain the largest residual on a given cell
-      map_entropy_residual_K[cell] = *max_element( ent_residual_local.begin(), ent_residual_local.end() );;
-      
+      map_entropy_residual_K[cell] = *max_element( ent_residual_local.begin(), ent_residual_local.end() );
       /*
       std::cout << "entropy_residual_K_q[ii](q) = ";
       for (unsigned int q = 0; q < n_q_pts; ++q)
@@ -560,6 +619,13 @@ void BurgersProblem<dim>::compute_entropy_residual(const double dt)
       std::cout << std::endl;  
       std::cout << " entropy_residual_K(ii) = " << map_entropy_residual_K[cell] << std::endl;
       */
+#else
+      for (unsigned int q = 0; q < n_q_pts; ++q)
+        entropy_residual_K_q[ii](q) = ent_residual_local[q];
+      entropy_residual_K(ii) = *max_element( ent_residual_local.begin(), ent_residual_local.end() );
+      // increment cell storage index
+      ++ii;
+#endif
 
     } // end locally_owned if statement
   
@@ -609,10 +675,11 @@ void BurgersProblem<dim>::compute_entropy_viscosity()
   //  using maps instead
   typename DoFHandler<dim>::active_cell_iterator  cell = dof_handler.begin_active(),
                                                   endc = dof_handler.end();
+#ifdef USE_MAPS
+  // loop on the active cells
   for (; cell!=endc; ++cell)
     if (cell->is_locally_owned()) 
     {
-      
       // compute entropy viscosity on the whole cell
       map_entropy_viscosity_K[cell] = std::pow(map_h_local[cell],2) 
                     * ( c_ent * map_entropy_residual_K[cell] + c_jmp * map_jumps_K[cell] ) 
@@ -635,6 +702,23 @@ void BurgersProblem<dim>::compute_entropy_viscosity()
       // now that the raw jump value is no longer needed, put the final value for output purposes
       map_jumps_K[cell] *= std::pow(map_h_local[cell],2) / entropy_normalization;
     }
+#else
+  const unsigned int n_act_cells = triangulation.n_locally_owned_active_cells();
+  Assert( entropy_viscosity_K.size()   == n_act_cells, ExcDimensionMismatch (entropy_viscosity_K.size(), n_act_cells) );
+  Assert( entropy_viscosity_K_q.size() == n_act_cells, ExcDimensionMismatch (entropy_viscosity_K_q.size(), n_act_cells) );
+  Assert( entropy_viscosity_K_q[0].size() == n_q_pts , ExcDimensionMismatch (entropy_viscosity_K_q[0].size(), n_q_pts) );
+
+  for ( unsigned int ii=0; ii<n_act_cells; ++ii )
+  {
+    entropy_viscosity_K(ii) = std::pow(h_local_K(ii),2) 
+              * ( c_ent * entropy_residual_K(ii)      + c_jmp * jumps_K(ii) ) / entropy_normalization ;
+    for (unsigned int q = 0; q < n_q_pts; ++q)
+      entropy_viscosity_K_q[ii](q) = std::pow(h_local_K(ii),2) 
+              * ( c_ent * entropy_residual_K_q[ii](q) + c_jmp * jumps_K(ii) ) / entropy_normalization ;
+    // now that the raw jump value is no longer needed, put the final value for output purposes
+    jumps_K(ii) *= std::pow(h_local_K(ii),2) / entropy_normalization;
+  } // end loop over local active cells
+#endif
   
 }
 
@@ -650,7 +734,7 @@ void BurgersProblem<dim>::compute_first_order_viscosity()
   // fe stuff
   const UpdateFlags update_cell_flags = update_values ;
   FEValues<dim> fe_values (fe, quadrature, update_cell_flags);
-
+  // cell iterators
   typename DoFHandler<dim>::active_cell_iterator  cell = dof_handler.begin_active(),
                                                   endc = dof_handler.end();
   // local vars
@@ -658,6 +742,16 @@ void BurgersProblem<dim>::compute_first_order_viscosity()
   Tensor<1,dim> flx_prime_current_local;
   std::vector<double> propagation_speed_local(n_q_pts);
   double max_speed;
+
+#ifdef USE_MAPS
+#else
+  const unsigned int n_act_cells = triangulation.n_locally_owned_active_cells();
+  Assert( first_order_viscosity_K.size()   == n_act_cells, ExcDimensionMismatch (first_order_viscosity_K.size(), n_act_cells) );
+  Assert( first_order_viscosity_K_q.size() == n_act_cells, ExcDimensionMismatch (first_order_viscosity_K_q.size(), n_act_cells) );
+  Assert( first_order_viscosity_K_q[0].size() == n_q_pts, ExcDimensionMismatch (entropy_viscosity_K_q[0].size(), n_q_pts) );
+
+  unsigned int ii=0;
+#endif
 
   // loop over active cells
   for (; cell!=endc; ++cell)
@@ -672,6 +766,7 @@ void BurgersProblem<dim>::compute_first_order_viscosity()
         propagation_speed_local[q] = flux.propagation_speed(flx_prime_current_local);
       }
       max_speed = *max_element( propagation_speed_local.begin(), propagation_speed_local.end() );
+#ifdef USE_MAPS
       // use maps for 1st order visc on cell
       map_first_order_viscosity_K[cell] = c_max * map_h_local[cell] * max_speed;
       // use maps for 1st order visc at quad pts
@@ -689,9 +784,15 @@ void BurgersProblem<dim>::compute_first_order_viscosity()
                 << " cmax "                << c_max 
                 << std::endl;
       */
-
+#else
+     for (unsigned int q = 0; q < n_q_pts; ++q)
+        first_order_viscosity_K_q[ii](q) = c_max * h_local_K(ii) *  propagation_speed_local[q];
+      first_order_viscosity_K(ii) = c_max * h_local_K(ii) * max_speed ;
+      // increment cell storage index
+      ++ii;
+#endif
     } // end locally_owned if statement
-  
+
   //  std::string str = "visc_1st_" + Utilities::int_to_string(time_step_no,4) + ".txt"; std::ofstream o (str.c_str()); 
   //  first_order_viscosity_K.print(o, 10,true,false);
 }
@@ -718,6 +819,14 @@ void BurgersProblem<dim>::compute_jumps()
 
   typename DoFHandler<dim>::active_cell_iterator  cell = dof_handler.begin_active(),
                                                   endc = dof_handler.end();
+
+#ifdef USE_MAPS
+#else
+  const unsigned int n_act_cells = triangulation.n_locally_owned_active_cells();
+  Assert( jumps_K.size()   == n_act_cells, ExcDimensionMismatch (jumps_K.size(), n_act_cells) );
+  unsigned int ii=0;
+#endif
+
   // loop over active cells
   for (; cell!=endc; ++cell)
     if (cell->is_locally_owned())
@@ -778,10 +887,15 @@ void BurgersProblem<dim>::compute_jumps()
         max_jump_in_cell = std::max( max_jump_in_cell, max_jump_on_face ); 
       } // end loop on iface
       
+#ifdef USE_MAPS
       // store max jump in map (not yet devided by the entropy normalization constant)
-      map_jumps_K[cell] =  max_jump_in_cell ;
+      map_jumps_K[cell] =  max_jump_in_cell;
       //map_jumps_K[cell] =  0.0 ; // jcr dbg
-      
+#else
+      // use array instead of map
+      jumps_K(ii) = max_jump_in_cell;
+      ++ii;
+#endif
     } // end locally_owned if statement
 
   // debug print out
@@ -800,7 +914,7 @@ template<int dim>
 void BurgersProblem<dim>::compute_viscosity(const double dt)
 {
 
-  enum visc_t {constant_viscosity=0, first_order_viscosity=1, entropy_viscosity=2};
+  // enum visc_t {constant_viscosity=0, first_order_viscosity=1, entropy_viscosity=2};
   
   //  pcout << "visc OPTION : " << parameters->viscosity_option << ", " << first_order_viscosity << std::endl;
 
@@ -812,42 +926,69 @@ void BurgersProblem<dim>::compute_viscosity(const double dt)
   typename DoFHandler<dim>::active_cell_iterator  cell = dof_handler.begin_active(),
                                                   endc = dof_handler.end();
 
+#ifdef USE_MAPS
+#else
+  const unsigned int n_act_cells = triangulation.n_locally_owned_active_cells();
+  Assert( viscosity_K.size()   == n_act_cells, ExcDimensionMismatch (viscosity_K.size(), n_act_cells) );
+  Assert( viscosity_K_q.size() == n_act_cells, ExcDimensionMismatch (viscosity_K_q.size(), n_act_cells) );
+  Assert( viscosity_K_q[0].size() == n_q_pts , ExcDimensionMismatch (viscosity_K_q[0].size(), n_q_pts) );
+#endif
+
   switch(parameters->viscosity_option)
   {
   case Parameters::constant_viscosity:
     {
+#ifdef USE_MAPS
     for (; cell!=endc; ++cell)
       if (cell->is_locally_owned())
       {
         map_viscosity_K[cell] = parameters->const_visc;
-	      // ones *= 0.0; ones.add(1.0);
+        // ones *= 0.0; ones.add(1.0);
         ones = 1.0;
         ones *= parameters->const_visc;
         map_viscosity_K_q[cell] = ones;
       } // end locally_owned if statement
+#else
+    for ( unsigned int ii=0; ii<n_act_cells; ++ii )
+    {
+      viscosity_K(ii) = parameters->const_visc;
+      for (unsigned int q = 0; q < n_q_pts; ++q)
+        viscosity_K_q[ii](q) = parameters->const_visc;
+    } // end loop over active cells
+#endif
     break;
-    }
+    } // end case
   case Parameters::first_order_viscosity:
     {
     compute_first_order_viscosity();
+#ifdef USE_MAPS
     for (; cell!=endc; ++cell)
       if (cell->is_locally_owned())
       {
         map_viscosity_K[cell]   = map_first_order_viscosity_K[cell];
         // map_viscosity_K_q[cell] = map_first_order_viscosity_K_q[cell];
-	      // ones *= 0.0; ones.add(1.0);
-	      ones = 1.0;
+        // ones *= 0.0; ones.add(1.0);
+        ones = 1.0;
         ones *= map_first_order_viscosity_K[cell];
         map_viscosity_K_q[cell] = ones;
       } // end locally_owned if statement
+#else
+    for ( unsigned int ii=0; ii<n_act_cells; ++ii )
+    {
+      viscosity_K(ii) =  first_order_viscosity_K(ii) ;
+      for (unsigned int q = 0; q < n_q_pts; ++q)
+        viscosity_K_q[ii](q) = first_order_viscosity_K(ii) ; // first_order_viscosity_K_q[ii](q) ;
+    } // end loop over active cells
+#endif
     break;
-    }
+    } // end case
   case Parameters::entropy_viscosity:
     {
     compute_entropy_residual(dt);
     compute_jumps();
     compute_entropy_viscosity();
     compute_first_order_viscosity();
+#ifdef USE_MAPS
     for (; cell!=endc; ++cell)
       if (cell->is_locally_owned())
       {
@@ -859,14 +1000,22 @@ void BurgersProblem<dim>::compute_viscosity(const double dt)
               aux(k) = map_first_order_viscosity_K_q[cell](k);           
         map_viscosity_K_q[cell] = aux ;
         // for comparison, I temporary use
-	      // ones *= 0.0; ones.add(1.0);
-	      ones = 1.0;
+        // ones *= 0.0; ones.add(1.0);
+        ones = 1.0;
         ones *= std::min( map_entropy_viscosity_K[cell],map_first_order_viscosity_K[cell] ); 
         map_viscosity_K_q[cell] = ones;      
       } // end locally_owned if statement
+#else
+    for ( unsigned int ii=0; ii<n_act_cells; ++ii )
+    {
+      viscosity_K(ii) = std::min( entropy_viscosity_K(ii), first_order_viscosity_K(ii) ) ;
+      for (unsigned int q = 0; q < n_q_pts; ++q)
+        viscosity_K_q[ii](q) =  viscosity_K(ii); // <--for comparison only!!!! std::min( entropy_viscosity_K_q[ii](q), first_order_viscosity_K_q[ii](q) ) ;
+  } // end loop over active cells
+#endif
     break;
-    }
-  }
+    } // end case
+  } // end switch
 
  /*
  // viscosity for output
@@ -1069,6 +1218,11 @@ void BurgersProblem<dim>::compute_ss_residual (bool is_steady_state,
   typename DoFHandler<dim>::active_cell_iterator cell = dof_handler.begin_active(),
                                                  endc = dof_handler.end();
 
+#ifdef USE_MAPS
+#else
+  unsigned int ii=0;
+#endif
+
   for (; cell!=endc; ++cell)
     if (cell->is_locally_owned())
     {
@@ -1101,10 +1255,13 @@ void BurgersProblem<dim>::compute_ss_residual (bool is_steady_state,
                             * flx_prime_local[q_point]
                             * current_solution_gradients[q_point]
                           +fe_values.shape_grad_component(i, q_point, burgers_component)
-        //                  * viscosity_K_q[ii](q_point) // bad idea with 1st order visc
-        //                    * viscosity_K(ii)
-        //                    * map_viscosity_K[cell]
+#ifdef USE_MAPS
                             * map_viscosity_K_q[cell](q_point)
+        //                    * map_viscosity_K[cell]
+#else
+                            * viscosity_K_q[ii](q_point) // bad idea with 1st order visc
+        //                    * viscosity_K(ii)
+#endif
                             * current_solution_gradients[q_point]
                          )
                          * fe_values.JxW(q_point);
@@ -1124,6 +1281,10 @@ void BurgersProblem<dim>::compute_ss_residual (bool is_steady_state,
             cell->face(face)->boundary_indicator());
           */
         }
+#ifdef USE_MAPS
+#else
+      ++ii; // increment cell index
+#endif
     } // end locally_owned if statement
   
   system_rhs.compress(VectorOperation::add);
@@ -1191,7 +1352,7 @@ void BurgersProblem<dim>::assemble_ss_jacobian (const bool is_steady_state,
   std::vector<double>          current_solution_values(n_q_pts);
   std::vector<Tensor<1, dim> > current_solution_gradients(n_q_pts);
   std::vector<Tensor<1, dim> > flx_prime_local(n_q_pts);
-  std::vector<double>          viscosity(n_q_pts,0.0);
+//  std::vector<double>          viscosity(n_q_pts,0.0);
   Tensor<1, dim>  flx_second;
   for(unsigned int d=0; d<dim; ++d)
      flx_second[d]=1.0;
@@ -1199,6 +1360,11 @@ void BurgersProblem<dim>::assemble_ss_jacobian (const bool is_steady_state,
   typename DoFHandler<dim>::active_cell_iterator  cell = dof_handler.begin_active(),
                                                   endc = dof_handler.end();
   
+#ifdef USE_MAPS
+#else
+  unsigned int ii=0;
+#endif
+
   for (; cell!=endc; ++cell)
     if (cell->is_locally_owned())
     {
@@ -1242,7 +1408,13 @@ void BurgersProblem<dim>::assemble_ss_jacobian (const bool is_steady_state,
                                            *fe_values.shape_grad_component(j, q_point, burgers_component)
                                          )
                                        + fe_values.shape_grad_component(i, q_point, burgers_component)
-                                        *viscosity[q_point]
+#ifdef USE_MAPS
+                                          * map_viscosity_K_q[cell](q_point)
+                      //                    * map_viscosity_K[cell]
+#else
+                                          * viscosity_K_q[ii](q_point) // bad idea with 1st order visc
+                      //                    * viscosity_K(ii)
+#endif
                                         *fe_values.shape_grad_component(j, q_point, burgers_component)
                                      )  
                                      * fe_values.JxW(q_point);
@@ -1260,6 +1432,10 @@ void BurgersProblem<dim>::assemble_ss_jacobian (const bool is_steady_state,
                 cell->at_boundary(face),
                 cell->face(face)->boundary_indicator());*/
         }
+#ifdef USE_MAPS
+#else
+      ++ii; // increment cell index
+#endif
     } // end locally_owned if statement
 
   system_matrix.compress(VectorOperation::add);
@@ -1450,10 +1626,13 @@ void BurgersProblem<dim>::compute_ss_residual_cell_term (const FEValues<dim>    
                         * flx_prime_local[q_point]
                         * current_solution_gradients[q_point]
                       + fe_values.shape_grad_component(i, q_point, burgers_component)
-      //                  * viscosity_K_q[ii](q_point) // bad idea with 1st order visc
-      //                    * viscosity_K(ii)
-      //                    * map_viscosity_K[cell]
+#ifdef USE_MAPS
                           * map_viscosity_K_q[cell](q_point)
+      //                    * map_viscosity_K[cell]
+#else
+                          * viscosity_K_q[ii](q_point) // bad idea with 1st order visc
+      //                    * viscosity_K(ii)
+#endif
                         * current_solution_gradients[q_point]
                      )
                      * fe_values.JxW(q_point);
@@ -1556,15 +1735,28 @@ std::pair<unsigned int, double> BurgersProblem<dim>::linear_solve (LA::MPI::Vect
       // compute linear tolerance based on atol and rtol values
       const double linear_tol = parameters->linear_rtol*system_rhs.l2_norm() + parameters->linear_atol ;
 
-      SolverControl  solver_control (system_rhs.size(), linear_tol );
-      LA::SolverGMRES  solver (solver_control);
+      SolverControl  solver_control (system_rhs.size(), linear_tol,
+                                     parameters->output == Parameters::Solver::verbose );
+
+      solver_control.set_max_steps(1000);
+      
+//      LA::SolverGMRES::AdditionalData data_gmres;
+//      data_gmres.restart_parameter = 1000;
+
+
+      LA::SolverGMRES solver (solver_control);
       // jcr : is it ok for performance to create this solution vector here each time?
       LA::MPI::Vector completely_dist_solution(locally_owned_dofs,mpi_communicator);
       
-//      LA::MPI::PreconditionSSOR preconditioner;
-//      dealii::PETScWrappers::PreconditionNone preconditioner ;
-//      preconditioner.initialize(system_matrix);
+//      SolverGMRES<TrilinosWrappers::MPI::BlockVector>
+//      gmres (solver_control,
+//             SolverGMRES<TrilinosWrappers::MPI::BlockVector >::AdditionalData(100));
 
+//      LA::MPI::PreconditionSSOR preconditioner;
+      dealii::PETScWrappers::PreconditionNone preconditioner ;
+      preconditioner.initialize(system_matrix);
+
+/* why is AMG making convergence harder for sdirk with ~ large dt's ?
       LA::MPI::PreconditionAMG preconditioner;
       LA::MPI::PreconditionAMG::AdditionalData data;
 #ifdef USE_PETSC_LA
@@ -1573,9 +1765,11 @@ std::pair<unsigned int, double> BurgersProblem<dim>::linear_solve (LA::MPI::Vect
       / * Trilinos defaults are good * /
 #endif
       preconditioner.initialize(system_matrix, data);
+*/
 
       // solver only accepts locally owned dofs, thus use completely_dist_solution as container for the solve result
       solver.solve (system_matrix, completely_dist_solution, system_rhs, preconditioner );
+
       constraints.distribute(completely_dist_solution); // jcr see void ConstraintMatrix::distribute_local_to_global
       // copy ghost elements needed for the "locally relevant" part of the solution vector on each subdomain
       newton_update = completely_dist_solution;
@@ -1583,6 +1777,21 @@ std::pair<unsigned int, double> BurgersProblem<dim>::linear_solve (LA::MPI::Vect
       return std::pair<unsigned int, double> (solver_control.last_step(),
                                               solver_control.last_value() ); 
 
+    }
+    case Parameters::Solver::direct:
+    {
+      SolverControl solver_control (1,0);
+      dealii::PETScWrappers::SparseDirectMUMPS direct (solver_control, parameters->output == Parameters::Solver::verbose);
+
+      LA::MPI::Vector completely_dist_solution(locally_owned_dofs,mpi_communicator);
+      direct.solve (system_matrix, completely_dist_solution, system_rhs);
+
+      constraints.distribute(completely_dist_solution); // jcr see void ConstraintMatrix::distribute_local_to_global
+      // copy ghost elements needed for the "locally relevant" part of the solution vector on each subdomain
+      newton_update = completely_dist_solution;
+
+      return std::pair<unsigned int, double> (solver_control.last_step(),
+                                              solver_control.last_value());
     }
     default:
       Assert( false , ExcNotImplemented() );
@@ -1610,7 +1819,8 @@ std::pair<unsigned int, double> BurgersProblem<dim>::mass_solve (LA::MPI::Vector
       // compute linear tolerance based on atol and rtol values
       const double linear_tol = parameters->linear_rtol*system_rhs.l2_norm() + parameters->linear_atol ;
 
-      SolverControl  solver_control (system_rhs.size(), linear_tol );
+      SolverControl  solver_control (system_rhs.size(), linear_tol, 
+                                     parameters->output == Parameters::Solver::verbose );
       LA::SolverCG solver (solver_control);
       LA::MPI::Vector completely_dist_solution(locally_owned_dofs,mpi_communicator);
  
@@ -1627,7 +1837,7 @@ std::pair<unsigned int, double> BurgersProblem<dim>::mass_solve (LA::MPI::Vector
 #else
       / * Trilinos defaults are good * /
 #endif
-      preconditioner.initialize(system_matrix, data);
+      preconditioner.initialize(mass_matrix, data);
   
       // solver only accepts locally owned dofs, thus use completely_dist_solution as container for the solve result
       solver.solve (mass_matrix, completely_dist_solution, system_rhs, preconditioner );    
@@ -1953,8 +2163,8 @@ void BurgersProblem<dim>::run ()
     }
     case 2:
     {
-      upper_right = Point<dim> (parameters->length,parameters->length);
-      // upper_right = Point<dim> (parameters->length,1./double(parameters->n_init_refinements_x));
+      // upper_right = Point<dim> (parameters->length,parameters->length);
+      upper_right = Point<dim> (parameters->length,1./double(parameters->n_init_refinements_x));
       break;
     }
     case 3:
